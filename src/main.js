@@ -39,7 +39,7 @@ const mapZoomOut = document.querySelector('#map-zoom-out');
 
 const STORAGE_KEY = 'house3d-renovation-v1';
 const renovationData = loadRenovationData();
-let renovationView = 'asbuilt';
+let renovationView = 'demolition';
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
@@ -107,6 +107,7 @@ let currentLookObject = null;
 let mapZoom = 5.5;
 let mapExpanded = false;
 let floorLevels = new Map();
+let panelInteractionMode = false;
 const doorStates = new Map();
 
 const keys = new Set();
@@ -292,6 +293,26 @@ function renovationVisible(statusValue) {
   return true;
 }
 
+function setRenovationView(view, announce = false) {
+  const allowed = ['asbuilt', 'demolition', 'proposed', 'combined'];
+  if (!allowed.includes(view)) return;
+  renovationView = view;
+  renovationViewControls.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.renovationView === renovationView);
+  });
+  applyVisibility();
+  if (announce && navigationMode === 'walk') {
+    const labels = { asbuilt: 'As-built', demolition: 'Demolition', proposed: 'Proposed', combined: 'Combined' };
+    lookLabel.textContent = `${labels[renovationView]} renovation view`;
+  }
+}
+
+function cycleRenovationView() {
+  const order = ['demolition', 'proposed', 'combined', 'asbuilt'];
+  const next = order[(order.indexOf(renovationView) + 1) % order.length];
+  setRenovationView(next, true);
+}
+
 function updateRenovationCounts() {
   let demolish = 0;
   let proposed = 0;
@@ -323,6 +344,10 @@ function setSelectedRenovationField(field, value) {
   updateSelectionEditor();
   updateRenovationCounts();
   applyVisibility();
+  if (field === 'status' && navigationMode === 'walk') {
+    const labels = { existing: 'Existing', demolish: 'Demolish', proposed: 'Proposed' };
+    lookLabel.textContent = `${selectedObject.name || 'Object'} → ${labels[value]}`;
+  }
 }
 
 function doorNodeFor(object) {
@@ -572,13 +597,13 @@ function updatePOVTarget() {
     if (door) {
       const state = doorStates.get(door);
       const action = state?.targetOpen ? 'close' : 'open';
-      lookLabel.textContent = `${door.name || 'Door'} · F ${action} · E inspect`;
+      lookLabel.textContent = `${door.name || 'Door'} · F ${action} · E select`;
     } else {
-      lookLabel.textContent = `${semantic.name || typeFor(semantic)} · E to inspect`;
+      lookLabel.textContent = `${semantic.name || typeFor(semantic)} · E select · Z/X/C classify`;
     }
   } else {
     crosshair.classList.remove('target');
-    lookLabel.textContent = 'Aim at an element · E to inspect';
+    lookLabel.textContent = 'Aim at an element · E to select';
   }
 }
 
@@ -718,6 +743,7 @@ function respawnWalk() {
 function enterWalkMode() {
   if (!house || navigationMode === 'walk') return;
   navigationMode = 'walk';
+  panelInteractionMode = false;
   clearSelection();
   setWholeHouseVisibleForWalk();
   orbitControls.enabled = false;
@@ -741,6 +767,7 @@ function enterWalkMode() {
 function exitWalkMode() {
   if (navigationMode !== 'walk') return;
   navigationMode = 'orbit';
+  panelInteractionMode = false;
   if (walkControls.isLocked) walkControls.unlock();
   keys.clear();
   currentLookObject = null;
@@ -794,7 +821,7 @@ async function loadHouse() {
         computeFloorLevels();
         frameObject(house);
         updateRenovationCounts();
-        applyVisibility();
+        setRenovationView('demolition');
         status.classList.add('ready');
         status.lastChild.textContent = ' Model loaded';
       },
@@ -817,9 +844,7 @@ updateRenovationCounts();
 renovationViewControls.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-renovation-view]');
   if (!button) return;
-  renovationView = button.dataset.renovationView;
-  renovationViewControls.querySelectorAll('button').forEach((item) => item.classList.toggle('active', item === button));
-  applyVisibility();
+  setRenovationView(button.dataset.renovationView);
 });
 
 statusEditor.addEventListener('click', (event) => {
@@ -849,16 +874,20 @@ modeControls.addEventListener('click', (event) => {
 
 walkControls.addEventListener('lock', () => {
   if (navigationMode !== 'walk') return;
+  panelInteractionMode = false;
   pointerLockCard.hidden = true;
 });
 
 walkControls.addEventListener('unlock', () => {
   keys.clear();
-  if (navigationMode === 'walk') pointerLockCard.hidden = false;
+  if (navigationMode === 'walk') pointerLockCard.hidden = panelInteractionMode;
 });
 
 resumeWalkButton.addEventListener('click', () => {
-  if (navigationMode === 'walk') walkControls.lock();
+  if (navigationMode === 'walk') {
+    panelInteractionMode = false;
+    walkControls.lock();
+  }
 });
 
 mapZoomIn.addEventListener('click', () => setMapZoom(mapZoom * 0.8));
@@ -911,7 +940,38 @@ renderer.domElement.addEventListener('pointerup', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
+  const target = event.target;
+  const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target?.isContentEditable;
+  if (editing) return;
+
+  if (event.code === 'KeyG') {
+    cycleRenovationView();
+    event.preventDefault();
+    return;
+  }
+
+  const statusShortcut = { KeyZ: 'existing', KeyX: 'demolish', KeyC: 'proposed' }[event.code];
+  if (statusShortcut && selectedObject) {
+    setSelectedRenovationField('status', statusShortcut);
+    event.preventDefault();
+    return;
+  }
+
   if (navigationMode !== 'walk') return;
+
+  if (event.code === 'Tab') {
+    panelInteractionMode = walkControls.isLocked;
+    if (walkControls.isLocked) {
+      walkControls.unlock();
+      pointerLockCard.hidden = true;
+    } else {
+      panelInteractionMode = false;
+      walkControls.lock();
+    }
+    event.preventDefault();
+    return;
+  }
+
   if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
     keys.add(event.code);
     event.preventDefault();
