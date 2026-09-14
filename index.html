@@ -10,7 +10,7 @@
     <div id="app">
       <header class="topbar">
         <div>
-          <p class="eyebrow">INTERACTIVE MODEL</p>
+          <p class="eyebrow">INTERACTIVE RENOVATION MODEL</p>
           <h1>House 3D Viewer</h1>
         </div>
         <div class="status" id="status"><span></span> Loading model</div>
@@ -28,6 +28,22 @@
             <span>WASD move · 1/2/3 teleport floors · Shift sprint · F door action · E inspect · R respawn · M map · Esc release mouse</span>
           </div>
         </section>
+
+        <section>
+          <p class="section-title">Renovation view</p>
+          <div class="renovation-view" id="renovation-view-controls">
+            <button class="active" data-renovation-view="asbuilt">As-built</button>
+            <button data-renovation-view="demolition">Demolition</button>
+            <button data-renovation-view="proposed">Proposed</button>
+            <button data-renovation-view="combined">Combined</button>
+          </div>
+          <div class="renovation-summary">
+            <span><i class="legend-dot demolition"></i><b id="demolition-count">0</b> demo</span>
+            <span><i class="legend-dot proposed"></i><b id="proposed-count">0</b> proposed</span>
+          </div>
+          <p class="local-note">Planning data stays in this browser only.</p>
+        </section>
+
         <section>
           <p class="section-title">View</p>
           <div class="segmented" id="floor-controls">
@@ -37,6 +53,7 @@
             <button data-floor="3">Floor 3</button>
           </div>
         </section>
+
         <section>
           <p class="section-title">Layers</p>
           <label class="switch-row">
@@ -44,16 +61,44 @@
             <input id="ceilings" type="checkbox" checked />
           </label>
         </section>
+
         <section class="selection-section">
           <p class="section-title">Selection</p>
           <div class="selection-empty" id="selection-empty">Click an element in Orbit mode, or aim and press E in POV mode.</div>
-          <dl class="selection-info" id="selection-info" hidden>
-            <div><dt>Object</dt><dd id="selected-name">—</dd></div>
-            <div><dt>Type</dt><dd id="selected-type">—</dd></div>
-            <div><dt>Floor</dt><dd id="selected-floor">—</dd></div>
-          </dl>
+          <div id="selection-details" hidden>
+            <dl class="selection-info" id="selection-info">
+              <div><dt>Object</dt><dd id="selected-name">—</dd></div>
+              <div><dt>Type</dt><dd id="selected-type">—</dd></div>
+              <div><dt>Floor</dt><dd id="selected-floor">—</dd></div>
+              <div><dt>Status</dt><dd id="selected-status">Existing</dd></div>
+            </dl>
+
+            <p class="field-label">Renovation status</p>
+            <div class="status-editor" id="status-editor">
+              <button data-renovation-status="existing">Existing</button>
+              <button data-renovation-status="demolish">Demolish</button>
+              <button data-renovation-status="proposed">Proposed</button>
+            </div>
+
+            <label class="field-block">
+              <span class="field-label">Discipline</span>
+              <select id="discipline-select">
+                <option value="architecture">Architecture</option>
+                <option value="electrical">Electrical</option>
+                <option value="ventilation">Ventilation</option>
+                <option value="hvac">HVAC / AC</option>
+                <option value="plumbing">Plumbing</option>
+              </select>
+            </label>
+
+            <label class="field-block">
+              <span class="field-label">Private note</span>
+              <textarea id="renovation-note" rows="3" placeholder="e.g. remove wall, new pocket door…"></textarea>
+            </label>
+          </div>
           <button class="clear-selection" id="clear-selection" hidden>Clear selection</button>
         </section>
+
         <button class="reset" id="reset">Reset camera</button>
       </aside>
 
