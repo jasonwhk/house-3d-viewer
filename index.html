@@ -25,7 +25,7 @@
           </div>
           <div class="walk-note" id="walk-note" hidden>
             <strong>First-person inspection</strong>
-            <span>WASD move · Mouse look · Shift sprint · E inspect · Esc release mouse</span>
+            <span>WASD move · Mouse look · Shift sprint · E inspect · R respawn · M map · Esc release mouse</span>
           </div>
         </section>
         <section>
@@ -63,6 +63,23 @@
         <div class="crosshair" id="crosshair"><span></span><span></span></div>
         <div class="look-label" id="look-label">Aim at an element · E to inspect</div>
       </div>
+
+      <aside class="minimap" id="minimap" hidden>
+        <div class="minimap-head">
+          <span id="minimap-floor">FLOOR 1</span>
+          <span class="minimap-key">M · MAP</span>
+        </div>
+        <div class="minimap-viewport" id="minimap-viewport">
+          <div class="north-marker">N</div>
+          <div class="player-marker" id="player-marker"><span></span></div>
+          <div class="map-scale"><span></span><b id="map-scale-label">2 m</b></div>
+        </div>
+        <div class="minimap-controls">
+          <button id="map-zoom-out" aria-label="Zoom map out">−</button>
+          <span id="minimap-mode-label">LOCAL MAP</span>
+          <button id="map-zoom-in" aria-label="Zoom map in">+</button>
+        </div>
+      </aside>
 
       <div class="pointer-lock-card" id="pointer-lock-card" hidden>
         <p class="eyebrow">POV WALKTHROUGH</p>
