@@ -18,6 +18,17 @@
 
       <aside class="panel">
         <section>
+          <p class="section-title">Navigation</p>
+          <div class="mode-switch" id="mode-controls">
+            <button class="active" data-mode="orbit">Orbit</button>
+            <button data-mode="walk">POV walk</button>
+          </div>
+          <div class="walk-note" id="walk-note" hidden>
+            <strong>First-person inspection</strong>
+            <span>WASD move · Mouse look · Shift sprint · E inspect · Esc release mouse</span>
+          </div>
+        </section>
+        <section>
           <p class="section-title">View</p>
           <div class="segmented" id="floor-controls">
             <button class="active" data-floor="all">Whole house</button>
@@ -35,7 +46,7 @@
         </section>
         <section class="selection-section">
           <p class="section-title">Selection</p>
-          <div class="selection-empty" id="selection-empty">Click a wall, door, window or fixture.</div>
+          <div class="selection-empty" id="selection-empty">Click an element in Orbit mode, or aim and press E in POV mode.</div>
           <dl class="selection-info" id="selection-info" hidden>
             <div><dt>Object</dt><dd id="selected-name">—</dd></div>
             <div><dt>Type</dt><dd id="selected-type">—</dd></div>
@@ -47,7 +58,20 @@
       </aside>
 
       <div id="canvas-wrap"></div>
-      <div class="hint">Drag to orbit · Scroll to zoom · Right-drag to pan · Click to inspect</div>
+
+      <div class="pov-hud" id="pov-hud" hidden>
+        <div class="crosshair" id="crosshair"><span></span><span></span></div>
+        <div class="look-label" id="look-label">Aim at an element · E to inspect</div>
+      </div>
+
+      <div class="pointer-lock-card" id="pointer-lock-card" hidden>
+        <p class="eyebrow">POV WALKTHROUGH</p>
+        <strong>Click to enter the house</strong>
+        <span>Use the mouse to look around. Press Esc at any time to release the pointer.</span>
+        <button id="resume-walk">Enter POV</button>
+      </div>
+
+      <div class="hint" id="hint">Drag to orbit · Scroll to zoom · Right-drag to pan · Click to inspect</div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
