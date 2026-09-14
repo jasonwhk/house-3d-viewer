@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import './style.css';
 
@@ -11,6 +12,14 @@ const selectedName = document.querySelector('#selected-name');
 const selectedType = document.querySelector('#selected-type');
 const selectedFloor = document.querySelector('#selected-floor');
 const clearSelectionButton = document.querySelector('#clear-selection');
+const modeControls = document.querySelector('#mode-controls');
+const walkNote = document.querySelector('#walk-note');
+const povHud = document.querySelector('#pov-hud');
+const crosshair = document.querySelector('#crosshair');
+const lookLabel = document.querySelector('#look-label');
+const pointerLockCard = document.querySelector('#pointer-lock-card');
+const resumeWalkButton = document.querySelector('#resume-walk');
+const hint = document.querySelector('#hint');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
@@ -27,12 +36,14 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 mount.appendChild(renderer.domElement);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.06;
-controls.screenSpacePanning = true;
-controls.minDistance = 1;
-controls.maxDistance = 60;
+const orbitControls = new OrbitControls(camera, renderer.domElement);
+orbitControls.enableDamping = true;
+orbitControls.dampingFactor = 0.06;
+orbitControls.screenSpacePanning = true;
+orbitControls.minDistance = 1;
+orbitControls.maxDistance = 60;
+
+const walkControls = new PointerLockControls(camera, renderer.domElement);
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x7b8079, 2.2));
 const sun = new THREE.DirectionalLight(0xffffff, 2.6);
@@ -46,12 +57,30 @@ grid.material.transparent = true;
 scene.add(grid);
 
 const raycaster = new THREE.Raycaster();
+const groundRaycaster = new THREE.Raycaster();
+const collisionRaycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
+const clock = new THREE.Clock();
+
 let pointerDown = null;
 let house = null;
 let initialView = null;
 let selectionHelper = null;
 let selectedObject = null;
+let navigationMode = 'orbit';
+let walkableMeshes = [];
+let collisionMeshes = [];
+let currentLookObject = null;
+
+const keys = new Set();
+const player = {
+  eyeHeight: 1.64,
+  radius: 0.24,
+  walkSpeed: 1.65,
+  sprintSpeed: 3.4,
+  maxStepUp: 0.32,
+  maxDrop: 0.55,
+};
 
 function frameObject(object) {
   const box = new THREE.Box3().setFromObject(object);
@@ -61,12 +90,13 @@ function frameObject(object) {
   const distance = radius / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.35;
   const direction = new THREE.Vector3(1, 0.7, 1).normalize();
   camera.position.copy(center).add(direction.multiplyScalar(distance));
-  controls.target.copy(center);
+  orbitControls.target.copy(center);
   camera.near = Math.max(radius / 1000, 0.01);
   camera.far = radius * 100;
+  camera.fov = 38;
   camera.updateProjectionMatrix();
-  controls.update();
-  initialView = { position: camera.position.clone(), target: controls.target.clone() };
+  orbitControls.update();
+  initialView = { position: camera.position.clone(), target: orbitControls.target.clone() };
 }
 
 function floorFor(object) {
@@ -86,6 +116,16 @@ function isCeiling(object) {
   let node = object;
   while (node) {
     if (/ceiling/i.test(node.name || '')) return true;
+    node = node.parent;
+  }
+  return false;
+}
+
+function isWalkable(object) {
+  let node = object;
+  while (node && node !== house) {
+    const name = node.name || '';
+    if (/^Floors?(?:_|$)/i.test(name) || /^Stairs?(?:_|$)/i.test(name)) return true;
     node = node.parent;
   }
   return false;
@@ -164,6 +204,196 @@ function applyVisibility() {
   }
 }
 
+function visibleMeshes(meshes) {
+  return meshes.filter((mesh) => mesh.visible);
+}
+
+function findGroundAt(position, floorHint = null, extraUp = 0.55) {
+  if (!walkableMeshes.length) return null;
+  const origin = new THREE.Vector3(position.x, position.y + extraUp, position.z);
+  groundRaycaster.set(origin, new THREE.Vector3(0, -1, 0));
+  groundRaycaster.near = 0;
+  groundRaycaster.far = player.eyeHeight + extraUp + player.maxDrop + 0.8;
+
+  let candidates = visibleMeshes(walkableMeshes);
+  if (floorHint) {
+    const sameFloor = candidates.filter((mesh) => floorFor(mesh) === floorHint);
+    if (sameFloor.length) candidates = sameFloor;
+  }
+
+  const hits = groundRaycaster.intersectObjects(candidates, false);
+  for (const hit of hits) {
+    if (!hit.face) continue;
+    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+    if (normal.y > 0.35) return hit.point.y;
+  }
+  return null;
+}
+
+function findWalkSpawn(floor = '1') {
+  if (!house) return null;
+  const box = new THREE.Box3();
+  let found = false;
+
+  house.traverse((node) => {
+    if (!node.isMesh || floorFor(node) !== floor) return;
+    const nodeBox = new THREE.Box3().setFromObject(node);
+    if (!nodeBox.isEmpty()) {
+      box.union(nodeBox);
+      found = true;
+    }
+  });
+
+  if (!found || box.isEmpty()) return null;
+  const center = box.getCenter(new THREE.Vector3());
+  const start = new THREE.Vector3(center.x, box.max.y + 0.5, center.z);
+
+  groundRaycaster.set(start, new THREE.Vector3(0, -1, 0));
+  groundRaycaster.near = 0;
+  groundRaycaster.far = box.getSize(new THREE.Vector3()).y + 2;
+  const floorMeshes = walkableMeshes.filter((mesh) => floorFor(mesh) === floor);
+  const hits = groundRaycaster.intersectObjects(floorMeshes, false);
+  if (!hits.length) return null;
+
+  return new THREE.Vector3(center.x, hits[0].point.y + player.eyeHeight, center.z);
+}
+
+function blockedByGeometry(from, delta) {
+  const distance = delta.length();
+  if (distance < 1e-5) return false;
+
+  const direction = delta.clone().normalize();
+  const right = new THREE.Vector3(-direction.z, 0, direction.x).multiplyScalar(player.radius * 0.72);
+  const forwardProbe = distance + player.radius;
+  const heights = [-player.eyeHeight * 0.55, -0.18];
+  const offsets = [new THREE.Vector3(), right, right.clone().multiplyScalar(-1)];
+  const meshes = visibleMeshes(collisionMeshes);
+
+  for (const yOffset of heights) {
+    for (const sideOffset of offsets) {
+      const origin = from.clone().add(sideOffset);
+      origin.y += yOffset;
+      collisionRaycaster.set(origin, direction);
+      collisionRaycaster.near = 0;
+      collisionRaycaster.far = forwardProbe;
+      const hits = collisionRaycaster.intersectObjects(meshes, false);
+      const blockingHit = hits.find((hit) => {
+        if (!hit.face) return true;
+        const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+        return Math.abs(normal.y) < 0.78;
+      });
+      if (blockingHit) return true;
+    }
+  }
+
+  return false;
+}
+
+function updateWalkMovement(deltaTime) {
+  if (navigationMode !== 'walk' || !walkControls.isLocked || !house) return;
+
+  const forward = Number(keys.has('KeyW')) - Number(keys.has('KeyS'));
+  const strafe = Number(keys.has('KeyD')) - Number(keys.has('KeyA'));
+  if (!forward && !strafe) return;
+
+  const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? player.sprintSpeed : player.walkSpeed;
+  const look = new THREE.Vector3();
+  camera.getWorldDirection(look);
+  look.y = 0;
+  if (look.lengthSq() < 1e-6) return;
+  look.normalize();
+  const right = new THREE.Vector3().crossVectors(look, camera.up).normalize();
+  const move = look.multiplyScalar(forward).add(right.multiplyScalar(strafe));
+  if (move.lengthSq() > 1) move.normalize();
+  move.multiplyScalar(speed * Math.min(deltaTime, 0.05));
+
+  const current = camera.position.clone();
+  if (blockedByGeometry(current, move)) return;
+
+  const proposed = current.clone().add(move);
+  const currentGround = current.y - player.eyeHeight;
+  const ground = findGroundAt(proposed, null, player.maxStepUp + 0.12);
+  if (ground === null) return;
+
+  const elevationChange = ground - currentGround;
+  if (elevationChange > player.maxStepUp || elevationChange < -player.maxDrop) return;
+
+  proposed.y = ground + player.eyeHeight;
+  camera.position.copy(proposed);
+}
+
+function updatePOVTarget() {
+  if (navigationMode !== 'walk' || !house) return;
+  raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  raycaster.far = 4.5;
+  const hits = raycaster.intersectObject(house, true).filter((hit) => hit.object.visible);
+  currentLookObject = hits.length ? hits[0].object : null;
+
+  if (currentLookObject) {
+    const semantic = semanticNodeFor(currentLookObject);
+    crosshair.classList.add('target');
+    lookLabel.textContent = `${semantic.name || typeFor(semantic)} · E to inspect`;
+  } else {
+    crosshair.classList.remove('target');
+    lookLabel.textContent = 'Aim at an element · E to inspect';
+  }
+}
+
+function setWholeHouseVisibleForWalk() {
+  document.querySelectorAll('#floor-controls button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.floor === 'all');
+  });
+  document.querySelector('#ceilings').checked = true;
+  applyVisibility();
+}
+
+function enterWalkMode() {
+  if (!house || navigationMode === 'walk') return;
+  navigationMode = 'walk';
+  clearSelection();
+  setWholeHouseVisibleForWalk();
+  orbitControls.enabled = false;
+  grid.visible = false;
+  document.body.classList.add('walk-mode');
+  walkNote.hidden = false;
+  povHud.hidden = false;
+  pointerLockCard.hidden = false;
+  hint.hidden = true;
+  modeControls.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'walk'));
+
+  const spawn = findWalkSpawn('1');
+  if (spawn) camera.position.copy(spawn);
+  camera.fov = 72;
+  camera.near = 0.04;
+  camera.updateProjectionMatrix();
+  camera.rotation.set(0, 0, 0);
+  walkControls.lock();
+}
+
+function exitWalkMode() {
+  if (navigationMode !== 'walk') return;
+  navigationMode = 'orbit';
+  if (walkControls.isLocked) walkControls.unlock();
+  keys.clear();
+  currentLookObject = null;
+  orbitControls.enabled = true;
+  grid.visible = true;
+  document.body.classList.remove('walk-mode');
+  walkNote.hidden = true;
+  povHud.hidden = true;
+  pointerLockCard.hidden = true;
+  hint.hidden = false;
+  modeControls.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'orbit'));
+  if (initialView) {
+    camera.fov = 38;
+    camera.position.copy(initialView.position);
+    orbitControls.target.copy(initialView.target);
+    camera.near = 0.01;
+    camera.updateProjectionMatrix();
+    orbitControls.update();
+  }
+}
+
 async function loadHouse() {
   try {
     status.lastChild.textContent = ' Loading model';
@@ -177,11 +407,15 @@ async function loadHouse() {
       '',
       (gltf) => {
         house = gltf.scene;
+        house.updateMatrixWorld(true);
+        walkableMeshes = [];
+        collisionMeshes = [];
         house.traverse((node) => {
-          if (node.isMesh) {
-            node.castShadow = true;
-            node.receiveShadow = true;
-          }
+          if (!node.isMesh) return;
+          node.castShadow = true;
+          node.receiveShadow = true;
+          collisionMeshes.push(node);
+          if (isWalkable(node)) walkableMeshes.push(node);
         });
         scene.add(house);
         frameObject(house);
@@ -204,7 +438,29 @@ async function loadHouse() {
 
 loadHouse();
 
+modeControls.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-mode]');
+  if (!button || !house) return;
+  if (button.dataset.mode === 'walk') enterWalkMode();
+  else exitWalkMode();
+});
+
+walkControls.addEventListener('lock', () => {
+  if (navigationMode !== 'walk') return;
+  pointerLockCard.hidden = true;
+});
+
+walkControls.addEventListener('unlock', () => {
+  keys.clear();
+  if (navigationMode === 'walk') pointerLockCard.hidden = false;
+});
+
+resumeWalkButton.addEventListener('click', () => {
+  if (navigationMode === 'walk') walkControls.lock();
+});
+
 document.querySelector('#floor-controls').addEventListener('click', (event) => {
+  if (navigationMode === 'walk') return;
   const button = event.target.closest('button[data-floor]');
   if (!button) return;
   document.querySelectorAll('#floor-controls button').forEach((b) => b.classList.remove('active'));
@@ -212,22 +468,32 @@ document.querySelector('#floor-controls').addEventListener('click', (event) => {
   applyVisibility();
 });
 
-document.querySelector('#ceilings').addEventListener('change', applyVisibility);
+document.querySelector('#ceilings').addEventListener('change', () => {
+  if (navigationMode === 'walk') document.querySelector('#ceilings').checked = true;
+  applyVisibility();
+});
+
 document.querySelector('#reset').addEventListener('click', () => {
+  if (navigationMode === 'walk') {
+    const spawn = findWalkSpawn('1');
+    if (spawn) camera.position.copy(spawn);
+    return;
+  }
   if (!initialView) return;
   camera.position.copy(initialView.position);
-  controls.target.copy(initialView.target);
-  controls.update();
+  orbitControls.target.copy(initialView.target);
+  orbitControls.update();
 });
+
 clearSelectionButton.addEventListener('click', clearSelection);
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0) return;
+  if (navigationMode !== 'orbit' || event.button !== 0) return;
   pointerDown = { x: event.clientX, y: event.clientY };
 });
 
 renderer.domElement.addEventListener('pointerup', (event) => {
-  if (event.button !== 0 || !pointerDown || !house) return;
+  if (navigationMode !== 'orbit' || event.button !== 0 || !pointerDown || !house) return;
   const movement = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
   pointerDown = null;
   if (movement > 5) return;
@@ -242,6 +508,24 @@ renderer.domElement.addEventListener('pointerup', (event) => {
   else clearSelection();
 });
 
+window.addEventListener('keydown', (event) => {
+  if (navigationMode !== 'walk') return;
+  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
+    keys.add(event.code);
+    event.preventDefault();
+  }
+  if (event.code === 'KeyE' && currentLookObject) {
+    selectObject(currentLookObject);
+    event.preventDefault();
+  }
+});
+
+window.addEventListener('keyup', (event) => {
+  keys.delete(event.code);
+});
+
+window.addEventListener('blur', () => keys.clear());
+
 function resize() {
   const width = mount.clientWidth;
   const height = mount.clientHeight;
@@ -252,7 +536,12 @@ function resize() {
 
 new ResizeObserver(resize).observe(mount);
 renderer.setAnimationLoop(() => {
-  controls.update();
+  const delta = clock.getDelta();
+  if (navigationMode === 'orbit') orbitControls.update();
+  else {
+    updateWalkMovement(delta);
+    updatePOVTarget();
+  }
   if (selectionHelper) selectionHelper.update();
   renderer.render(scene, camera);
 });
