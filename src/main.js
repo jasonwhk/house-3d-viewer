@@ -5,6 +5,13 @@ import './style.css';
 
 const mount = document.querySelector('#canvas-wrap');
 const status = document.querySelector('#status');
+const selectionEmpty = document.querySelector('#selection-empty');
+const selectionInfo = document.querySelector('#selection-info');
+const selectedName = document.querySelector('#selected-name');
+const selectedType = document.querySelector('#selected-type');
+const selectedFloor = document.querySelector('#selected-floor');
+const clearSelectionButton = document.querySelector('#clear-selection');
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
 
@@ -38,8 +45,13 @@ grid.material.opacity = 0.45;
 grid.material.transparent = true;
 scene.add(grid);
 
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let pointerDown = null;
 let house = null;
 let initialView = null;
+let selectionHelper = null;
+let selectedObject = null;
 
 function frameObject(object) {
   const box = new THREE.Box3().setFromObject(object);
@@ -79,6 +91,60 @@ function isCeiling(object) {
   return false;
 }
 
+function semanticNodeFor(object) {
+  let node = object;
+  let fallback = object;
+  const semanticPattern = /^(wall|door|window|opening|ceiling|floor|fixture|object|stair|sink|toilet|bathtub|cabinet)/i;
+
+  while (node && node !== house) {
+    if (node.name) {
+      fallback = node;
+      if (semanticPattern.test(node.name)) return node;
+    }
+    node = node.parent;
+  }
+
+  return fallback;
+}
+
+function typeFor(object) {
+  const name = object?.name || '';
+  const match = name.match(/^(wall|door|window|opening|ceiling|floor|fixture|object|stair|sink|toilet|bathtub|cabinet)/i);
+  if (match) return match[1][0].toUpperCase() + match[1].slice(1).toLowerCase();
+  return object?.isMesh ? 'Mesh' : 'Object';
+}
+
+function clearSelection() {
+  selectedObject = null;
+  if (selectionHelper) {
+    scene.remove(selectionHelper);
+    selectionHelper.geometry?.dispose();
+    selectionHelper.material?.dispose();
+    selectionHelper = null;
+  }
+  selectionEmpty.hidden = false;
+  selectionInfo.hidden = true;
+  clearSelectionButton.hidden = true;
+}
+
+function selectObject(object) {
+  clearSelection();
+  selectedObject = semanticNodeFor(object);
+  selectionHelper = new THREE.BoxHelper(selectedObject, 0xd3772e);
+  selectionHelper.material.depthTest = false;
+  selectionHelper.material.transparent = true;
+  selectionHelper.material.opacity = 0.9;
+  selectionHelper.renderOrder = 999;
+  scene.add(selectionHelper);
+
+  selectedName.textContent = selectedObject.name || object.name || 'Unnamed object';
+  selectedType.textContent = typeFor(selectedObject);
+  selectedFloor.textContent = floorFor(selectedObject) ? `Floor ${floorFor(selectedObject)}` : '—';
+  selectionEmpty.hidden = true;
+  selectionInfo.hidden = false;
+  clearSelectionButton.hidden = false;
+}
+
 function applyVisibility() {
   if (!house) return;
   const selected = document.querySelector('#floor-controls .active')?.dataset.floor || 'all';
@@ -89,6 +155,13 @@ function applyVisibility() {
     const floorVisible = selected === 'all' || !floor || floor === selected;
     node.visible = floorVisible && (showCeilings || !isCeiling(node));
   });
+
+  if (selectedObject) {
+    const selectedFloorValue = floorFor(selectedObject);
+    const hiddenByFloor = selected !== 'all' && selectedFloorValue && selectedFloorValue !== selected;
+    const hiddenCeiling = !showCeilings && isCeiling(selectedObject);
+    if (hiddenByFloor || hiddenCeiling) clearSelection();
+  }
 }
 
 async function loadHouse() {
@@ -146,6 +219,28 @@ document.querySelector('#reset').addEventListener('click', () => {
   controls.target.copy(initialView.target);
   controls.update();
 });
+clearSelectionButton.addEventListener('click', clearSelection);
+
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  pointerDown = { x: event.clientX, y: event.clientY };
+});
+
+renderer.domElement.addEventListener('pointerup', (event) => {
+  if (event.button !== 0 || !pointerDown || !house) return;
+  const movement = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
+  pointerDown = null;
+  if (movement > 5) return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+
+  const hits = raycaster.intersectObject(house, true).filter((hit) => hit.object.visible);
+  if (hits.length) selectObject(hits[0].object);
+  else clearSelection();
+});
 
 function resize() {
   const width = mount.clientWidth;
@@ -158,5 +253,6 @@ function resize() {
 new ResizeObserver(resize).observe(mount);
 renderer.setAnimationLoop(() => {
   controls.update();
+  if (selectionHelper) selectionHelper.update();
   renderer.render(scene, camera);
 });
