@@ -96,6 +96,7 @@ let currentLookObject = null;
 let mapZoom = 5.5;
 let mapExpanded = false;
 let floorLevels = new Map();
+const doorStates = new Map();
 
 const keys = new Set();
 const player = {
@@ -175,6 +176,90 @@ function typeFor(object) {
   const match = name.match(/^(wall|door|window|opening|ceiling|floor|fixture|object|stair|sink|toilet|bathtub|cabinet)/i);
   if (match) return match[1][0].toUpperCase() + match[1].slice(1).toLowerCase();
   return object?.isMesh ? 'Mesh' : 'Object';
+}
+
+function doorNodeFor(object) {
+  let node = object;
+  while (node && node !== house) {
+    if (/^Door(?:_|$)/i.test(node.name || '')) return node;
+    node = node.parent;
+  }
+  return null;
+}
+
+function prepareDoor(door) {
+  if (!door) return null;
+  if (doorStates.has(door)) return doorStates.get(door);
+  if (!door.parent) return null;
+
+  house.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(door);
+  if (box.isEmpty()) return null;
+
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const widthAlongX = size.x >= size.z;
+  const hingeWorld = center.clone();
+  if (widthAlongX) hingeWorld.x = box.min.x;
+  else hingeWorld.z = box.min.z;
+
+  const parent = door.parent;
+  const pivot = new THREE.Group();
+  pivot.name = `${door.name || 'Door'}__hinge`;
+  parent.add(pivot);
+  pivot.position.copy(parent.worldToLocal(hingeWorld.clone()));
+  pivot.attach(door);
+  house.updateMatrixWorld(true);
+
+  let openSign;
+  if (widthAlongX) openSign = camera.position.z >= center.z ? 1 : -1;
+  else openSign = camera.position.x >= center.x ? -1 : 1;
+
+  const state = {
+    door,
+    pivot,
+    center,
+    widthAlongX,
+    targetOpen: false,
+    angle: 0,
+    openAngle: openSign * Math.PI * 0.5,
+  };
+  doorStates.set(door, state);
+  return state;
+}
+
+function toggleDoor(object) {
+  const door = doorNodeFor(object);
+  if (!door) return false;
+  const state = prepareDoor(door);
+  if (!state) return false;
+
+  if (!state.targetOpen) {
+    const box = new THREE.Box3().setFromObject(door);
+    const center = box.getCenter(new THREE.Vector3());
+    if (state.widthAlongX) state.openAngle = (camera.position.z >= center.z ? 1 : -1) * Math.PI * 0.5;
+    else state.openAngle = (camera.position.x >= center.x ? -1 : 1) * Math.PI * 0.5;
+    state.targetOpen = true;
+    return true;
+  }
+
+  const doorCenter = new THREE.Box3().setFromObject(door).getCenter(new THREE.Vector3());
+  const horizontalDistance = Math.hypot(camera.position.x - doorCenter.x, camera.position.z - doorCenter.z);
+  if (horizontalDistance < 1.0) {
+    lookLabel.textContent = 'Move away from the doorway before closing';
+    return true;
+  }
+
+  state.targetOpen = false;
+  return true;
+}
+
+function updateDoorAnimations(deltaTime) {
+  for (const state of doorStates.values()) {
+    const target = state.targetOpen ? state.openAngle : 0;
+    state.angle = THREE.MathUtils.damp(state.angle, target, 10, Math.min(deltaTime, 0.05));
+    state.pivot.rotation.y = state.angle;
+  }
 }
 
 function clearSelection() {
@@ -306,6 +391,7 @@ function blockedByGeometry(from, delta) {
       collisionRaycaster.far = forwardProbe;
       const hits = collisionRaycaster.intersectObjects(meshes, false);
       const blockingHit = hits.find((hit) => {
+        if (doorNodeFor(hit.object)) return false;
         const normal = surfaceNormalWorld(hit);
         if (!normal) return true;
         return Math.abs(normal.y) < 0.78;
@@ -358,8 +444,15 @@ function updatePOVTarget() {
 
   if (currentLookObject) {
     const semantic = semanticNodeFor(currentLookObject);
+    const door = doorNodeFor(currentLookObject);
     crosshair.classList.add('target');
-    lookLabel.textContent = `${semantic.name || typeFor(semantic)} · E to inspect`;
+    if (door) {
+      const state = doorStates.get(door);
+      const action = state?.targetOpen ? 'close' : 'open';
+      lookLabel.textContent = `${door.name || 'Door'} · F ${action} · E inspect`;
+    } else {
+      lookLabel.textContent = `${semantic.name || typeFor(semantic)} · E to inspect`;
+    }
   } else {
     crosshair.classList.remove('target');
     lookLabel.textContent = 'Aim at an element · E to inspect';
@@ -562,13 +655,14 @@ async function loadHouse() {
         walkableMeshes = [];
         groundMeshes = [];
         collisionMeshes = [];
+        doorStates.clear();
 
         house.traverse((node) => {
           if (!node.isMesh) return;
           node.castShadow = true;
           node.receiveShadow = true;
           collisionMeshes.push(node);
-          if (!isCeiling(node)) groundMeshes.push(node);
+          if (!isCeiling(node) && !doorNodeFor(node)) groundMeshes.push(node);
           if (isWalkable(node)) walkableMeshes.push(node);
         });
 
@@ -676,6 +770,9 @@ window.addEventListener('keydown', (event) => {
     selectObject(currentLookObject);
     event.preventDefault();
   }
+  if (event.code === 'KeyF' && currentLookObject) {
+    if (toggleDoor(currentLookObject)) event.preventDefault();
+  }
   if (event.code === 'KeyR') {
     respawnWalk();
     event.preventDefault();
@@ -717,6 +814,7 @@ renderer.setAnimationLoop(() => {
     updateWalkMovement(delta);
     updatePOVTarget();
   }
+  updateDoorAnimations(delta);
   if (selectionHelper) selectionHelper.update();
   renderer.render(scene, camera);
   if (navigationMode === 'walk') renderMinimap();
