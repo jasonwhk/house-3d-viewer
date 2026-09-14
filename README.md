@@ -1,14 +1,16 @@
 # House 3D Viewer
 
-Minimal public web viewer for an interactive house model.
+Public Three.js viewer for an interactive house model.
 
 ## Features
 
 - Three.js orbit / pan / zoom
+- First-person POV walkthrough with WASD + mouse look
+- In-world element inspection
 - Whole-house and per-floor views
 - Ceiling toggle for dollhouse-style viewing
 - Responsive desktop/mobile interface
-- GitHub Pages deployment
+- Vite build deployed with GitHub Actions to GitHub Pages
 
 ## Model
 
