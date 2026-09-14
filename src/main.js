@@ -7,11 +7,18 @@ import './style.css';
 const mount = document.querySelector('#canvas-wrap');
 const status = document.querySelector('#status');
 const selectionEmpty = document.querySelector('#selection-empty');
-const selectionInfo = document.querySelector('#selection-info');
+const selectionDetails = document.querySelector('#selection-details');
 const selectedName = document.querySelector('#selected-name');
 const selectedType = document.querySelector('#selected-type');
 const selectedFloor = document.querySelector('#selected-floor');
+const selectedStatus = document.querySelector('#selected-status');
 const clearSelectionButton = document.querySelector('#clear-selection');
+const statusEditor = document.querySelector('#status-editor');
+const disciplineSelect = document.querySelector('#discipline-select');
+const renovationNote = document.querySelector('#renovation-note');
+const renovationViewControls = document.querySelector('#renovation-view-controls');
+const demolitionCount = document.querySelector('#demolition-count');
+const proposedCount = document.querySelector('#proposed-count');
 const modeControls = document.querySelector('#mode-controls');
 const walkNote = document.querySelector('#walk-note');
 const povHud = document.querySelector('#pov-hud');
@@ -29,6 +36,10 @@ const mapScaleBar = document.querySelector('.map-scale span');
 const mapScaleLabel = document.querySelector('#map-scale-label');
 const mapZoomIn = document.querySelector('#map-zoom-in');
 const mapZoomOut = document.querySelector('#map-zoom-out');
+
+const STORAGE_KEY = 'house3d-renovation-v1';
+const renovationData = loadRenovationData();
+let renovationView = 'asbuilt';
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
@@ -108,6 +119,23 @@ const player = {
   maxDrop: 0.6,
 };
 
+function loadRenovationData() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveRenovationData() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(renovationData));
+  } catch (error) {
+    console.warn('Could not save renovation data', error);
+  }
+}
+
 function frameObject(object) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
@@ -178,6 +206,125 @@ function typeFor(object) {
   return object?.isMesh ? 'Mesh' : 'Object';
 }
 
+function objectKey(object) {
+  const parts = [];
+  let node = object;
+  while (node && node !== house) {
+    if (node.name) parts.unshift(node.name);
+    node = node.parent;
+  }
+  return parts.join('/') || object?.uuid || 'unknown';
+}
+
+function renovationRecordFor(object) {
+  const key = objectKey(object);
+  return renovationData[key] || { status: 'existing', discipline: 'architecture', note: '' };
+}
+
+function effectiveRenovationStatus(mesh) {
+  let node = mesh;
+  while (node && node !== house) {
+    const record = renovationData[objectKey(node)];
+    if (record?.status && record.status !== 'existing') return record.status;
+    node = node.parent;
+  }
+  return 'existing';
+}
+
+function captureOriginalMaterial(mesh) {
+  if (mesh.userData.renovationOriginalMaterial) return;
+  mesh.userData.renovationOriginalMaterial = mesh.material;
+  mesh.userData.renovationMaterialCache = {};
+}
+
+function cloneTintedMaterial(material, tint, mix, opacity = 1) {
+  const clone = material.clone();
+  if (clone.color) clone.color.lerp(new THREE.Color(tint), mix);
+  if (clone.emissive) clone.emissive.lerp(new THREE.Color(tint), Math.min(mix * 0.3, 0.22));
+  if (opacity < 1) {
+    clone.transparent = true;
+    clone.opacity = opacity;
+    clone.depthWrite = opacity > 0.55;
+  }
+  return clone;
+}
+
+function materialVariant(mesh, kind) {
+  captureOriginalMaterial(mesh);
+  const cache = mesh.userData.renovationMaterialCache;
+  if (cache[kind]) return cache[kind];
+  const original = mesh.userData.renovationOriginalMaterial;
+  const source = Array.isArray(original) ? original : [original];
+  const variants = source.map((material) => {
+    if (kind === 'demolish') return cloneTintedMaterial(material, 0xc95d49, 0.68, 0.62);
+    if (kind === 'proposed') return cloneTintedMaterial(material, 0x4f9a8d, 0.58, 0.9);
+    if (kind === 'dim') return cloneTintedMaterial(material, 0x7f8983, 0.35, 0.26);
+    return material;
+  });
+  cache[kind] = Array.isArray(original) ? variants : variants[0];
+  return cache[kind];
+}
+
+function applyRenovationMaterial(mesh, statusValue) {
+  captureOriginalMaterial(mesh);
+  const original = mesh.userData.renovationOriginalMaterial;
+  if (renovationView === 'demolition') {
+    mesh.material = statusValue === 'demolish' ? materialVariant(mesh, 'demolish') : materialVariant(mesh, 'dim');
+    return;
+  }
+  if (renovationView === 'proposed') {
+    mesh.material = statusValue === 'proposed' ? materialVariant(mesh, 'proposed') : original;
+    return;
+  }
+  if (renovationView === 'combined') {
+    if (statusValue === 'demolish') mesh.material = materialVariant(mesh, 'demolish');
+    else if (statusValue === 'proposed') mesh.material = materialVariant(mesh, 'proposed');
+    else mesh.material = original;
+    return;
+  }
+  mesh.material = original;
+}
+
+function renovationVisible(statusValue) {
+  if (renovationView === 'asbuilt') return statusValue !== 'proposed';
+  if (renovationView === 'demolition') return statusValue !== 'proposed';
+  if (renovationView === 'proposed') return statusValue !== 'demolish';
+  return true;
+}
+
+function updateRenovationCounts() {
+  let demolish = 0;
+  let proposed = 0;
+  for (const record of Object.values(renovationData)) {
+    if (record?.status === 'demolish') demolish += 1;
+    if (record?.status === 'proposed') proposed += 1;
+  }
+  demolitionCount.textContent = String(demolish);
+  proposedCount.textContent = String(proposed);
+}
+
+function updateSelectionEditor() {
+  if (!selectedObject) return;
+  const record = renovationRecordFor(selectedObject);
+  selectedStatus.textContent = record.status === 'demolish' ? 'Demolish' : record.status === 'proposed' ? 'Proposed' : 'Existing';
+  statusEditor.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.renovationStatus === record.status);
+  });
+  disciplineSelect.value = record.discipline || 'architecture';
+  renovationNote.value = record.note || '';
+}
+
+function setSelectedRenovationField(field, value) {
+  if (!selectedObject) return;
+  const key = objectKey(selectedObject);
+  const current = renovationData[key] || { status: 'existing', discipline: 'architecture', note: '' };
+  renovationData[key] = { ...current, [field]: value };
+  saveRenovationData();
+  updateSelectionEditor();
+  updateRenovationCounts();
+  applyVisibility();
+}
+
 function doorNodeFor(object) {
   let node = object;
   while (node && node !== house) {
@@ -191,18 +338,15 @@ function prepareDoor(door) {
   if (!door) return null;
   if (doorStates.has(door)) return doorStates.get(door);
   if (!door.parent) return null;
-
   house.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(door);
   if (box.isEmpty()) return null;
-
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const widthAlongX = size.x >= size.z;
   const hingeWorld = center.clone();
   if (widthAlongX) hingeWorld.x = box.min.x;
   else hingeWorld.z = box.min.z;
-
   const parent = door.parent;
   const pivot = new THREE.Group();
   pivot.name = `${door.name || 'Door'}__hinge`;
@@ -210,20 +354,10 @@ function prepareDoor(door) {
   pivot.position.copy(parent.worldToLocal(hingeWorld.clone()));
   pivot.attach(door);
   house.updateMatrixWorld(true);
-
   let openSign;
   if (widthAlongX) openSign = camera.position.z >= center.z ? 1 : -1;
   else openSign = camera.position.x >= center.x ? -1 : 1;
-
-  const state = {
-    door,
-    pivot,
-    center,
-    widthAlongX,
-    targetOpen: false,
-    angle: 0,
-    openAngle: openSign * Math.PI * 0.5,
-  };
+  const state = { door, pivot, center, widthAlongX, targetOpen: false, angle: 0, openAngle: openSign * Math.PI * 0.5 };
   doorStates.set(door, state);
   return state;
 }
@@ -233,7 +367,6 @@ function toggleDoor(object) {
   if (!door) return false;
   const state = prepareDoor(door);
   if (!state) return false;
-
   if (!state.targetOpen) {
     const box = new THREE.Box3().setFromObject(door);
     const center = box.getCenter(new THREE.Vector3());
@@ -242,14 +375,12 @@ function toggleDoor(object) {
     state.targetOpen = true;
     return true;
   }
-
   const doorCenter = new THREE.Box3().setFromObject(door).getCenter(new THREE.Vector3());
   const horizontalDistance = Math.hypot(camera.position.x - doorCenter.x, camera.position.z - doorCenter.z);
   if (horizontalDistance < 1.0) {
     lookLabel.textContent = 'Move away from the doorway before closing';
     return true;
   }
-
   state.targetOpen = false;
   return true;
 }
@@ -271,7 +402,7 @@ function clearSelection() {
     selectionHelper = null;
   }
   selectionEmpty.hidden = false;
-  selectionInfo.hidden = true;
+  selectionDetails.hidden = true;
   clearSelectionButton.hidden = true;
 }
 
@@ -284,33 +415,38 @@ function selectObject(object) {
   selectionHelper.material.opacity = 0.9;
   selectionHelper.renderOrder = 999;
   scene.add(selectionHelper);
-
   selectedName.textContent = selectedObject.name || object.name || 'Unnamed object';
   selectedType.textContent = typeFor(selectedObject);
   const selectedFloorValue = floorFor(selectedObject);
   selectedFloor.textContent = selectedFloorValue ? `Floor ${selectedFloorValue}` : '—';
   selectionEmpty.hidden = true;
-  selectionInfo.hidden = false;
+  selectionDetails.hidden = false;
   clearSelectionButton.hidden = false;
+  updateSelectionEditor();
+}
+
+function selectedObjectHasVisibleMesh() {
+  if (!selectedObject) return false;
+  let visible = false;
+  selectedObject.traverse((node) => {
+    if (node.isMesh && node.visible) visible = true;
+  });
+  return visible;
 }
 
 function applyVisibility() {
   if (!house) return;
-  const selected = document.querySelector('#floor-controls .active')?.dataset.floor || 'all';
+  const selectedFloorView = document.querySelector('#floor-controls .active')?.dataset.floor || 'all';
   const showCeilings = document.querySelector('#ceilings').checked;
   house.traverse((node) => {
     if (!node.isMesh) return;
     const floor = floorFor(node);
-    const floorVisible = selected === 'all' || !floor || floor === selected;
-    node.visible = floorVisible && (showCeilings || !isCeiling(node));
+    const floorVisible = selectedFloorView === 'all' || !floor || floor === selectedFloorView;
+    const statusValue = effectiveRenovationStatus(node);
+    node.visible = floorVisible && (showCeilings || !isCeiling(node)) && renovationVisible(statusValue);
+    applyRenovationMaterial(node, statusValue);
   });
-
-  if (selectedObject) {
-    const selectedFloorValue = floorFor(selectedObject);
-    const hiddenByFloor = selected !== 'all' && selectedFloorValue && selectedFloorValue !== selected;
-    const hiddenCeiling = !showCeilings && isCeiling(selectedObject);
-    if (hiddenByFloor || hiddenCeiling) clearSelection();
-  }
+  if (selectedObject && !selectedObjectHasVisibleMesh()) clearSelection();
 }
 
 function visibleMeshes(meshes) {
@@ -329,7 +465,6 @@ function findGroundAt(position, referenceGround = position.y - player.eyeHeight)
   groundRaycaster.set(origin, new THREE.Vector3(0, -1, 0));
   groundRaycaster.near = 0;
   groundRaycaster.far = probeUp + player.maxDrop + 0.9;
-
   const hits = groundRaycaster.intersectObjects(visibleMeshes(groundMeshes), false);
   for (const hit of hits) {
     const normal = surfaceNormalWorld(hit);
@@ -344,7 +479,6 @@ function findWalkSpawn(floor = '1') {
   if (!house) return null;
   const box = new THREE.Box3();
   let found = false;
-
   house.traverse((node) => {
     if (!node.isMesh || floorFor(node) !== floor) return;
     const nodeBox = new THREE.Box3().setFromObject(node);
@@ -353,14 +487,12 @@ function findWalkSpawn(floor = '1') {
       found = true;
     }
   });
-
   if (!found || box.isEmpty()) return null;
   const center = box.getCenter(new THREE.Vector3());
   const start = new THREE.Vector3(center.x, box.max.y + 1, center.z);
   groundRaycaster.set(start, new THREE.Vector3(0, -1, 0));
   groundRaycaster.near = 0;
   groundRaycaster.far = box.getSize(new THREE.Vector3()).y + 3;
-
   const preferred = visibleMeshes(walkableMeshes.filter((mesh) => floorFor(mesh) === floor));
   const candidates = preferred.length ? preferred : visibleMeshes(groundMeshes.filter((mesh) => floorFor(mesh) === floor));
   const hits = groundRaycaster.intersectObjects(candidates, false);
@@ -374,14 +506,12 @@ function findWalkSpawn(floor = '1') {
 function blockedByGeometry(from, delta) {
   const distance = delta.length();
   if (distance < 1e-5) return false;
-
   const direction = delta.clone().normalize();
   const right = new THREE.Vector3(-direction.z, 0, direction.x).multiplyScalar(player.radius * 0.72);
   const forwardProbe = distance + player.radius;
   const heights = [-player.eyeHeight * 0.52, -0.18];
   const offsets = [new THREE.Vector3(), right, right.clone().multiplyScalar(-1)];
   const meshes = visibleMeshes(collisionMeshes);
-
   for (const yOffset of heights) {
     for (const sideOffset of offsets) {
       const origin = from.clone().add(sideOffset);
@@ -404,33 +534,27 @@ function blockedByGeometry(from, delta) {
 
 function updateWalkMovement(deltaTime) {
   if (navigationMode !== 'walk' || !walkControls.isLocked || !house) return;
-
   const forward = Number(keys.has('KeyW')) - Number(keys.has('KeyS'));
   const strafe = Number(keys.has('KeyD')) - Number(keys.has('KeyA'));
   if (!forward && !strafe) return;
-
   const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? player.sprintSpeed : player.walkSpeed;
   const look = new THREE.Vector3();
   camera.getWorldDirection(look);
   look.y = 0;
   if (look.lengthSq() < 1e-6) return;
   look.normalize();
-
   const right = new THREE.Vector3().crossVectors(look, camera.up).normalize();
   const move = look.multiplyScalar(forward).add(right.multiplyScalar(strafe));
   if (move.lengthSq() > 1) move.normalize();
   move.multiplyScalar(speed * Math.min(deltaTime, 0.05));
-
   const current = camera.position.clone();
   const currentGround = current.y - player.eyeHeight;
   const proposed = current.clone().add(move);
   const ground = findGroundAt(proposed, currentGround);
   if (ground === null) return;
-
   const elevationChange = ground - currentGround;
   if (elevationChange > player.maxStepUp || elevationChange < -player.maxDrop) return;
   if (blockedByGeometry(current, move)) return;
-
   proposed.y = ground + player.eyeHeight;
   camera.position.copy(proposed);
 }
@@ -441,7 +565,6 @@ function updatePOVTarget() {
   raycaster.far = 4.5;
   const hits = raycaster.intersectObject(house, true).filter((hit) => hit.object.visible);
   currentLookObject = hits.length ? hits[0].object : null;
-
   if (currentLookObject) {
     const semantic = semanticNodeFor(currentLookObject);
     const door = doorNodeFor(currentLookObject);
@@ -484,7 +607,6 @@ function currentMapFloor() {
     const floor = floorFor(hit.object);
     if (floor) return floor;
   }
-
   let bestFloor = '1';
   let bestDistance = Infinity;
   const playerGround = camera.position.y - player.eyeHeight;
@@ -516,11 +638,9 @@ function updateMapScale() {
 
 function renderMinimap() {
   if (navigationMode !== 'walk' || !house || minimap.hidden) return;
-
   resizeMinimapRenderer();
   const floor = currentMapFloor();
   minimapFloor.textContent = floor === '0' ? 'BASEMENT' : `FLOOR ${floor}`;
-
   minimapCamera.left = -mapZoom;
   minimapCamera.right = mapZoom;
   minimapCamera.top = mapZoom;
@@ -528,7 +648,6 @@ function renderMinimap() {
   minimapCamera.position.set(camera.position.x, camera.position.y + 28, camera.position.z);
   minimapCamera.lookAt(camera.position.x, camera.position.y, camera.position.z);
   minimapCamera.updateProjectionMatrix();
-
   const direction = new THREE.Vector3();
   camera.getWorldDirection(direction);
   direction.y = 0;
@@ -537,19 +656,16 @@ function renderMinimap() {
     const heading = THREE.MathUtils.radToDeg(Math.atan2(direction.x, -direction.z));
     playerMarker.querySelector('span').style.transform = `rotate(${heading}deg)`;
   }
-
   const savedBackground = scene.background;
   const savedGrid = grid.visible;
   const savedSelection = selectionHelper?.visible;
   const visibility = [];
-
   house.traverse((node) => {
     if (!node.isMesh) return;
     visibility.push([node, node.visible]);
     const nodeFloor = floorFor(node);
     node.visible = node.visible && !isCeiling(node) && (!nodeFloor || nodeFloor === floor);
   });
-
   grid.visible = false;
   if (selectionHelper) selectionHelper.visible = false;
   scene.background = new THREE.Color(0x1b221e);
@@ -558,7 +674,6 @@ function renderMinimap() {
   grid.visible = savedGrid;
   if (selectionHelper) selectionHelper.visible = savedSelection;
   for (const [node, visible] of visibility) node.visible = visible;
-
   updateMapScale();
 }
 
@@ -614,7 +729,6 @@ function enterWalkMode() {
   pointerLockCard.hidden = false;
   hint.hidden = true;
   modeControls.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'walk'));
-
   respawnWalk();
   camera.fov = 72;
   camera.near = 0.04;
@@ -657,7 +771,6 @@ async function loadHouse() {
     const response = await fetch(modelUrl);
     if (!response.ok) throw new Error(`Model asset returned ${response.status}`);
     const glb = await response.arrayBuffer();
-
     new GLTFLoader().parse(
       glb,
       '',
@@ -668,19 +781,19 @@ async function loadHouse() {
         groundMeshes = [];
         collisionMeshes = [];
         doorStates.clear();
-
         house.traverse((node) => {
           if (!node.isMesh) return;
           node.castShadow = true;
           node.receiveShadow = true;
+          captureOriginalMaterial(node);
           collisionMeshes.push(node);
           if (!isCeiling(node) && !doorNodeFor(node)) groundMeshes.push(node);
           if (isWalkable(node)) walkableMeshes.push(node);
         });
-
         scene.add(house);
         computeFloorLevels();
         frameObject(house);
+        updateRenovationCounts();
         applyVisibility();
         status.classList.add('ready');
         status.lastChild.textContent = ' Model loaded';
@@ -699,6 +812,33 @@ async function loadHouse() {
 }
 
 loadHouse();
+updateRenovationCounts();
+
+renovationViewControls.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-renovation-view]');
+  if (!button) return;
+  renovationView = button.dataset.renovationView;
+  renovationViewControls.querySelectorAll('button').forEach((item) => item.classList.toggle('active', item === button));
+  applyVisibility();
+});
+
+statusEditor.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-renovation-status]');
+  if (!button || !selectedObject) return;
+  setSelectedRenovationField('status', button.dataset.renovationStatus);
+});
+
+disciplineSelect.addEventListener('change', () => {
+  if (selectedObject) setSelectedRenovationField('discipline', disciplineSelect.value);
+});
+
+renovationNote.addEventListener('input', () => {
+  if (!selectedObject) return;
+  const key = objectKey(selectedObject);
+  const current = renovationData[key] || { status: 'existing', discipline: 'architecture', note: '' };
+  renovationData[key] = { ...current, note: renovationNote.value };
+  saveRenovationData();
+});
 
 modeControls.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-mode]');
@@ -761,12 +901,10 @@ renderer.domElement.addEventListener('pointerup', (event) => {
   const movement = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
   pointerDown = null;
   if (movement > 5) return;
-
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-
   const hits = raycaster.intersectObject(house, true).filter((hit) => hit.object.visible);
   if (hits.length) selectObject(hits[0].object);
   else clearSelection();
@@ -785,11 +923,7 @@ window.addEventListener('keydown', (event) => {
   if (event.code === 'KeyF' && currentLookObject) {
     if (toggleDoor(currentLookObject)) event.preventDefault();
   }
-  const floorShortcut = {
-    Digit1: '1', Numpad1: '1',
-    Digit2: '2', Numpad2: '2',
-    Digit3: '3', Numpad3: '3',
-  }[event.code];
+  const floorShortcut = { Digit1: '1', Numpad1: '1', Digit2: '2', Numpad2: '2', Digit3: '3', Numpad3: '3' }[event.code];
   if (floorShortcut) {
     teleportToFloor(floorShortcut);
     event.preventDefault();
@@ -812,10 +946,7 @@ window.addEventListener('keydown', (event) => {
   }
 });
 
-window.addEventListener('keyup', (event) => {
-  keys.delete(event.code);
-});
-
+window.addEventListener('keyup', (event) => keys.delete(event.code));
 window.addEventListener('blur', () => keys.clear());
 
 function resize() {
