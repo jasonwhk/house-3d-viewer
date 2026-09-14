@@ -69,6 +69,7 @@ let selectionHelper = null;
 let selectedObject = null;
 let navigationMode = 'orbit';
 let walkableMeshes = [];
+let groundMeshes = [];
 let collisionMeshes = [];
 let currentLookObject = null;
 
@@ -78,8 +79,8 @@ const player = {
   radius: 0.24,
   walkSpeed: 1.65,
   sprintSpeed: 3.4,
-  maxStepUp: 0.32,
-  maxDrop: 0.55,
+  maxStepUp: 0.34,
+  maxDrop: 0.6,
 };
 
 function frameObject(object) {
@@ -125,7 +126,7 @@ function isWalkable(object) {
   let node = object;
   while (node && node !== house) {
     const name = node.name || '';
-    if (/^Floors?(?:_|$)/i.test(name) || /^Stairs?(?:_|$)/i.test(name)) return true;
+    if (/^(floors?|stairs?|staircase)(?:_|$)/i.test(name)) return true;
     node = node.parent;
   }
   return false;
@@ -135,7 +136,6 @@ function semanticNodeFor(object) {
   let node = object;
   let fallback = object;
   const semanticPattern = /^(wall|door|window|opening|ceiling|floor|fixture|object|stair|sink|toilet|bathtub|cabinet)/i;
-
   while (node && node !== house) {
     if (node.name) {
       fallback = node;
@@ -143,7 +143,6 @@ function semanticNodeFor(object) {
     }
     node = node.parent;
   }
-
   return fallback;
 }
 
@@ -208,24 +207,28 @@ function visibleMeshes(meshes) {
   return meshes.filter((mesh) => mesh.visible);
 }
 
-function findGroundAt(position, floorHint = null, extraUp = 0.55) {
-  if (!walkableMeshes.length) return null;
-  const origin = new THREE.Vector3(position.x, position.y + extraUp, position.z);
+function surfaceNormalWorld(hit) {
+  if (!hit.face) return null;
+  return hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+}
+
+function findGroundAt(position, referenceGround = position.y - player.eyeHeight) {
+  if (!groundMeshes.length) return null;
+
+  const probeUp = player.maxStepUp + 0.45;
+  const origin = new THREE.Vector3(position.x, referenceGround + probeUp, position.z);
   groundRaycaster.set(origin, new THREE.Vector3(0, -1, 0));
   groundRaycaster.near = 0;
-  groundRaycaster.far = player.eyeHeight + extraUp + player.maxDrop + 0.8;
+  groundRaycaster.far = probeUp + player.maxDrop + 0.9;
 
-  let candidates = visibleMeshes(walkableMeshes);
-  if (floorHint) {
-    const sameFloor = candidates.filter((mesh) => floorFor(mesh) === floorHint);
-    if (sameFloor.length) candidates = sameFloor;
-  }
-
-  const hits = groundRaycaster.intersectObjects(candidates, false);
+  const hits = groundRaycaster.intersectObjects(visibleMeshes(groundMeshes), false);
   for (const hit of hits) {
-    if (!hit.face) continue;
-    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
-    if (normal.y > 0.35) return hit.point.y;
+    const normal = surfaceNormalWorld(hit);
+    if (!normal || normal.y < 0.45) continue;
+    const elevationChange = hit.point.y - referenceGround;
+    if (elevationChange <= player.maxStepUp + 0.03 && elevationChange >= -player.maxDrop - 0.03) {
+      return hit.point.y;
+    }
   }
   return null;
 }
@@ -246,16 +249,19 @@ function findWalkSpawn(floor = '1') {
 
   if (!found || box.isEmpty()) return null;
   const center = box.getCenter(new THREE.Vector3());
-  const start = new THREE.Vector3(center.x, box.max.y + 0.5, center.z);
-
+  const start = new THREE.Vector3(center.x, box.max.y + 1, center.z);
   groundRaycaster.set(start, new THREE.Vector3(0, -1, 0));
   groundRaycaster.near = 0;
-  groundRaycaster.far = box.getSize(new THREE.Vector3()).y + 2;
-  const floorMeshes = walkableMeshes.filter((mesh) => floorFor(mesh) === floor);
-  const hits = groundRaycaster.intersectObjects(floorMeshes, false);
-  if (!hits.length) return null;
+  groundRaycaster.far = box.getSize(new THREE.Vector3()).y + 3;
 
-  return new THREE.Vector3(center.x, hits[0].point.y + player.eyeHeight, center.z);
+  const preferred = visibleMeshes(walkableMeshes.filter((mesh) => floorFor(mesh) === floor));
+  const candidates = preferred.length ? preferred : visibleMeshes(groundMeshes.filter((mesh) => floorFor(mesh) === floor));
+  const hits = groundRaycaster.intersectObjects(candidates, false);
+  for (const hit of hits) {
+    const normal = surfaceNormalWorld(hit);
+    if (normal && normal.y > 0.45) return new THREE.Vector3(center.x, hit.point.y + player.eyeHeight, center.z);
+  }
+  return null;
 }
 
 function blockedByGeometry(from, delta) {
@@ -265,7 +271,7 @@ function blockedByGeometry(from, delta) {
   const direction = delta.clone().normalize();
   const right = new THREE.Vector3(-direction.z, 0, direction.x).multiplyScalar(player.radius * 0.72);
   const forwardProbe = distance + player.radius;
-  const heights = [-player.eyeHeight * 0.55, -0.18];
+  const heights = [-player.eyeHeight * 0.52, -0.18];
   const offsets = [new THREE.Vector3(), right, right.clone().multiplyScalar(-1)];
   const meshes = visibleMeshes(collisionMeshes);
 
@@ -278,14 +284,13 @@ function blockedByGeometry(from, delta) {
       collisionRaycaster.far = forwardProbe;
       const hits = collisionRaycaster.intersectObjects(meshes, false);
       const blockingHit = hits.find((hit) => {
-        if (!hit.face) return true;
-        const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+        const normal = surfaceNormalWorld(hit);
+        if (!normal) return true;
         return Math.abs(normal.y) < 0.78;
       });
       if (blockingHit) return true;
     }
   }
-
   return false;
 }
 
@@ -302,21 +307,24 @@ function updateWalkMovement(deltaTime) {
   look.y = 0;
   if (look.lengthSq() < 1e-6) return;
   look.normalize();
+
   const right = new THREE.Vector3().crossVectors(look, camera.up).normalize();
   const move = look.multiplyScalar(forward).add(right.multiplyScalar(strafe));
   if (move.lengthSq() > 1) move.normalize();
   move.multiplyScalar(speed * Math.min(deltaTime, 0.05));
 
   const current = camera.position.clone();
-  if (blockedByGeometry(current, move)) return;
-
-  const proposed = current.clone().add(move);
   const currentGround = current.y - player.eyeHeight;
-  const ground = findGroundAt(proposed, null, player.maxStepUp + 0.12);
+  const proposed = current.clone().add(move);
+  const ground = findGroundAt(proposed, currentGround);
   if (ground === null) return;
 
   const elevationChange = ground - currentGround;
   if (elevationChange > player.maxStepUp || elevationChange < -player.maxDrop) return;
+
+  // Probe walls at torso/head height. Stair risers remain below these probes,
+  // so a valid tread can be stepped onto instead of being treated as a wall.
+  if (blockedByGeometry(current, move)) return;
 
   proposed.y = ground + player.eyeHeight;
   camera.position.copy(proposed);
@@ -347,6 +355,11 @@ function setWholeHouseVisibleForWalk() {
   applyVisibility();
 }
 
+function respawnWalk() {
+  const spawn = findWalkSpawn('1');
+  if (spawn) camera.position.copy(spawn);
+}
+
 function enterWalkMode() {
   if (!house || navigationMode === 'walk') return;
   navigationMode = 'walk';
@@ -361,8 +374,7 @@ function enterWalkMode() {
   hint.hidden = true;
   modeControls.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'walk'));
 
-  const spawn = findWalkSpawn('1');
-  if (spawn) camera.position.copy(spawn);
+  respawnWalk();
   camera.fov = 72;
   camera.near = 0.04;
   camera.updateProjectionMatrix();
@@ -409,14 +421,18 @@ async function loadHouse() {
         house = gltf.scene;
         house.updateMatrixWorld(true);
         walkableMeshes = [];
+        groundMeshes = [];
         collisionMeshes = [];
+
         house.traverse((node) => {
           if (!node.isMesh) return;
           node.castShadow = true;
           node.receiveShadow = true;
           collisionMeshes.push(node);
+          if (!isCeiling(node)) groundMeshes.push(node);
           if (isWalkable(node)) walkableMeshes.push(node);
         });
+
         scene.add(house);
         frameObject(house);
         applyVisibility();
@@ -475,8 +491,7 @@ document.querySelector('#ceilings').addEventListener('change', () => {
 
 document.querySelector('#reset').addEventListener('click', () => {
   if (navigationMode === 'walk') {
-    const spawn = findWalkSpawn('1');
-    if (spawn) camera.position.copy(spawn);
+    respawnWalk();
     return;
   }
   if (!initialView) return;
@@ -516,6 +531,10 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.code === 'KeyE' && currentLookObject) {
     selectObject(currentLookObject);
+    event.preventDefault();
+  }
+  if (event.code === 'KeyR') {
+    respawnWalk();
     event.preventDefault();
   }
 });
