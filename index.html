@@ -33,11 +33,21 @@
             <input id="ceilings" type="checkbox" checked />
           </label>
         </section>
+        <section class="selection-section">
+          <p class="section-title">Selection</p>
+          <div class="selection-empty" id="selection-empty">Click a wall, door, window or fixture.</div>
+          <dl class="selection-info" id="selection-info" hidden>
+            <div><dt>Object</dt><dd id="selected-name">—</dd></div>
+            <div><dt>Type</dt><dd id="selected-type">—</dd></div>
+            <div><dt>Floor</dt><dd id="selected-floor">—</dd></div>
+          </dl>
+          <button class="clear-selection" id="clear-selection" hidden>Clear selection</button>
+        </section>
         <button class="reset" id="reset">Reset camera</button>
       </aside>
 
       <div id="canvas-wrap"></div>
-      <div class="hint">Drag to orbit · Scroll to zoom · Right-drag to pan</div>
+      <div class="hint">Drag to orbit · Scroll to zoom · Right-drag to pan · Click to inspect</div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
