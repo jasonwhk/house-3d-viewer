@@ -583,9 +583,21 @@ function setWholeHouseVisibleForWalk() {
   applyVisibility();
 }
 
+function teleportToFloor(floor) {
+  const spawn = findWalkSpawn(floor);
+  if (!spawn) {
+    lookLabel.textContent = `No safe spawn found for Floor ${floor}`;
+    return false;
+  }
+  keys.clear();
+  camera.position.copy(spawn);
+  minimapFloor.textContent = floor === '0' ? 'BASEMENT' : `FLOOR ${floor}`;
+  lookLabel.textContent = `Teleported to Floor ${floor}`;
+  return true;
+}
+
 function respawnWalk() {
-  const spawn = findWalkSpawn('1');
-  if (spawn) camera.position.copy(spawn);
+  teleportToFloor('1');
 }
 
 function enterWalkMode() {
@@ -772,6 +784,15 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.code === 'KeyF' && currentLookObject) {
     if (toggleDoor(currentLookObject)) event.preventDefault();
+  }
+  const floorShortcut = {
+    Digit1: '1', Numpad1: '1',
+    Digit2: '2', Numpad2: '2',
+    Digit3: '3', Numpad3: '3',
+  }[event.code];
+  if (floorShortcut) {
+    teleportToFloor(floorShortcut);
+    event.preventDefault();
   }
   if (event.code === 'KeyR') {
     respawnWalk();
