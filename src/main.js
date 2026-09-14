@@ -20,6 +20,15 @@ const lookLabel = document.querySelector('#look-label');
 const pointerLockCard = document.querySelector('#pointer-lock-card');
 const resumeWalkButton = document.querySelector('#resume-walk');
 const hint = document.querySelector('#hint');
+const minimap = document.querySelector('#minimap');
+const minimapViewport = document.querySelector('#minimap-viewport');
+const minimapFloor = document.querySelector('#minimap-floor');
+const minimapModeLabel = document.querySelector('#minimap-mode-label');
+const playerMarker = document.querySelector('#player-marker');
+const mapScaleBar = document.querySelector('.map-scale span');
+const mapScaleLabel = document.querySelector('#map-scale-label');
+const mapZoomIn = document.querySelector('#map-zoom-in');
+const mapZoomOut = document.querySelector('#map-zoom-out');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
@@ -35,6 +44,18 @@ renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 mount.appendChild(renderer.domElement);
+
+const minimapRenderer = new THREE.WebGLRenderer({ antialias: true });
+minimapRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+minimapRenderer.outputColorSpace = THREE.SRGBColorSpace;
+minimapRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+minimapRenderer.toneMappingExposure = 1.0;
+minimapRenderer.shadowMap.enabled = false;
+minimapRenderer.setClearColor(0x1b221e, 1);
+minimapViewport.prepend(minimapRenderer.domElement);
+
+const minimapCamera = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.1, 80);
+minimapCamera.up.set(0, 0, -1);
 
 const orbitControls = new OrbitControls(camera, renderer.domElement);
 orbitControls.enableDamping = true;
@@ -72,6 +93,9 @@ let walkableMeshes = [];
 let groundMeshes = [];
 let collisionMeshes = [];
 let currentLookObject = null;
+let mapZoom = 5.5;
+let mapExpanded = false;
+let floorLevels = new Map();
 
 const keys = new Set();
 const player = {
@@ -104,9 +128,9 @@ function floorFor(object) {
   let node = object;
   while (node) {
     const name = node.name || '';
-    const rootMatch = name.match(/^Floor_([123])$/i);
+    const rootMatch = name.match(/^Floor_([0-9]+)$/i);
     if (rootMatch) return rootMatch[1];
-    const childMatch = name.match(/(?:^|_)F([123])(?:_|$)/i);
+    const childMatch = name.match(/(?:^|_)F([0-9]+)(?:_|$)/i);
     if (childMatch) return childMatch[1];
     node = node.parent;
   }
@@ -178,7 +202,8 @@ function selectObject(object) {
 
   selectedName.textContent = selectedObject.name || object.name || 'Unnamed object';
   selectedType.textContent = typeFor(selectedObject);
-  selectedFloor.textContent = floorFor(selectedObject) ? `Floor ${floorFor(selectedObject)}` : '—';
+  const selectedFloorValue = floorFor(selectedObject);
+  selectedFloor.textContent = selectedFloorValue ? `Floor ${selectedFloorValue}` : '—';
   selectionEmpty.hidden = true;
   selectionInfo.hidden = false;
   clearSelectionButton.hidden = false;
@@ -214,7 +239,6 @@ function surfaceNormalWorld(hit) {
 
 function findGroundAt(position, referenceGround = position.y - player.eyeHeight) {
   if (!groundMeshes.length) return null;
-
   const probeUp = player.maxStepUp + 0.45;
   const origin = new THREE.Vector3(position.x, referenceGround + probeUp, position.z);
   groundRaycaster.set(origin, new THREE.Vector3(0, -1, 0));
@@ -226,9 +250,7 @@ function findGroundAt(position, referenceGround = position.y - player.eyeHeight)
     const normal = surfaceNormalWorld(hit);
     if (!normal || normal.y < 0.45) continue;
     const elevationChange = hit.point.y - referenceGround;
-    if (elevationChange <= player.maxStepUp + 0.03 && elevationChange >= -player.maxDrop - 0.03) {
-      return hit.point.y;
-    }
+    if (elevationChange <= player.maxStepUp + 0.03 && elevationChange >= -player.maxDrop - 0.03) return hit.point.y;
   }
   return null;
 }
@@ -321,9 +343,6 @@ function updateWalkMovement(deltaTime) {
 
   const elevationChange = ground - currentGround;
   if (elevationChange > player.maxStepUp || elevationChange < -player.maxDrop) return;
-
-  // Probe walls at torso/head height. Stair risers remain below these probes,
-  // so a valid tread can be stepped onto instead of being treated as a wall.
   if (blockedByGeometry(current, move)) return;
 
   proposed.y = ground + player.eyeHeight;
@@ -345,6 +364,122 @@ function updatePOVTarget() {
     crosshair.classList.remove('target');
     lookLabel.textContent = 'Aim at an element · E to inspect';
   }
+}
+
+function computeFloorLevels() {
+  floorLevels = new Map();
+  for (const floor of ['0', '1', '2', '3', '4']) {
+    const meshes = walkableMeshes.filter((mesh) => floorFor(mesh) === floor);
+    if (!meshes.length) continue;
+    const box = new THREE.Box3();
+    for (const mesh of meshes) box.union(new THREE.Box3().setFromObject(mesh));
+    if (!box.isEmpty()) floorLevels.set(floor, box.min.y);
+  }
+}
+
+function currentMapFloor() {
+  if (!house) return '1';
+  const origin = camera.position.clone();
+  origin.y += 0.2;
+  groundRaycaster.set(origin, new THREE.Vector3(0, -1, 0));
+  groundRaycaster.near = 0;
+  groundRaycaster.far = player.eyeHeight + 1.2;
+  const hits = groundRaycaster.intersectObjects(groundMeshes, false);
+  for (const hit of hits) {
+    const normal = surfaceNormalWorld(hit);
+    if (!normal || normal.y < 0.35) continue;
+    const floor = floorFor(hit.object);
+    if (floor) return floor;
+  }
+
+  let bestFloor = '1';
+  let bestDistance = Infinity;
+  const playerGround = camera.position.y - player.eyeHeight;
+  for (const [floor, level] of floorLevels.entries()) {
+    const distance = Math.abs(playerGround - level);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestFloor = floor;
+    }
+  }
+  return bestFloor;
+}
+
+function resizeMinimapRenderer() {
+  const rect = minimapViewport.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width));
+  const height = Math.max(1, Math.round(rect.height));
+  const size = minimapRenderer.getSize(new THREE.Vector2());
+  if (size.x !== width || size.y !== height) minimapRenderer.setSize(width, height, false);
+}
+
+function updateMapScale() {
+  const viewportWidth = Math.max(minimapViewport.clientWidth, 1);
+  const meters = mapZoom >= 8 ? 4 : mapZoom >= 4 ? 2 : 1;
+  const pixels = THREE.MathUtils.clamp((meters / (mapZoom * 2)) * viewportWidth, 24, viewportWidth * 0.45);
+  mapScaleBar.style.width = `${pixels}px`;
+  mapScaleLabel.textContent = `${meters} m`;
+}
+
+function renderMinimap() {
+  if (navigationMode !== 'walk' || !house || minimap.hidden) return;
+
+  resizeMinimapRenderer();
+  const floor = currentMapFloor();
+  minimapFloor.textContent = floor === '0' ? 'BASEMENT' : `FLOOR ${floor}`;
+
+  minimapCamera.left = -mapZoom;
+  minimapCamera.right = mapZoom;
+  minimapCamera.top = mapZoom;
+  minimapCamera.bottom = -mapZoom;
+  minimapCamera.position.set(camera.position.x, camera.position.y + 28, camera.position.z);
+  minimapCamera.lookAt(camera.position.x, camera.position.y, camera.position.z);
+  minimapCamera.updateProjectionMatrix();
+
+  const direction = new THREE.Vector3();
+  camera.getWorldDirection(direction);
+  direction.y = 0;
+  if (direction.lengthSq() > 1e-5) {
+    direction.normalize();
+    const heading = THREE.MathUtils.radToDeg(Math.atan2(direction.x, -direction.z));
+    playerMarker.querySelector('span').style.transform = `rotate(${heading}deg)`;
+  }
+
+  const savedBackground = scene.background;
+  const savedGrid = grid.visible;
+  const savedSelection = selectionHelper?.visible;
+  const visibility = [];
+
+  house.traverse((node) => {
+    if (!node.isMesh) return;
+    visibility.push([node, node.visible]);
+    const nodeFloor = floorFor(node);
+    node.visible = node.visible && !isCeiling(node) && (!nodeFloor || nodeFloor === floor);
+  });
+
+  grid.visible = false;
+  if (selectionHelper) selectionHelper.visible = false;
+  scene.background = new THREE.Color(0x1b221e);
+  minimapRenderer.render(scene, minimapCamera);
+  scene.background = savedBackground;
+  grid.visible = savedGrid;
+  if (selectionHelper) selectionHelper.visible = savedSelection;
+  for (const [node, visible] of visibility) node.visible = visible;
+
+  updateMapScale();
+}
+
+function setMapZoom(nextZoom) {
+  mapZoom = THREE.MathUtils.clamp(nextZoom, 2.2, 14);
+  updateMapScale();
+}
+
+function toggleTacticalMap(force = null) {
+  mapExpanded = force === null ? !mapExpanded : force;
+  minimap.classList.toggle('expanded', mapExpanded);
+  document.body.classList.toggle('map-open', mapExpanded);
+  minimapModeLabel.textContent = mapExpanded ? 'TACTICAL MAP' : 'LOCAL MAP';
+  requestAnimationFrame(resizeMinimapRenderer);
 }
 
 function setWholeHouseVisibleForWalk() {
@@ -370,6 +505,7 @@ function enterWalkMode() {
   document.body.classList.add('walk-mode');
   walkNote.hidden = false;
   povHud.hidden = false;
+  minimap.hidden = false;
   pointerLockCard.hidden = false;
   hint.hidden = true;
   modeControls.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'walk'));
@@ -379,6 +515,7 @@ function enterWalkMode() {
   camera.near = 0.04;
   camera.updateProjectionMatrix();
   camera.rotation.set(0, 0, 0);
+  requestAnimationFrame(resizeMinimapRenderer);
   walkControls.lock();
 }
 
@@ -388,6 +525,8 @@ function exitWalkMode() {
   if (walkControls.isLocked) walkControls.unlock();
   keys.clear();
   currentLookObject = null;
+  toggleTacticalMap(false);
+  minimap.hidden = true;
   orbitControls.enabled = true;
   grid.visible = true;
   document.body.classList.remove('walk-mode');
@@ -434,6 +573,7 @@ async function loadHouse() {
         });
 
         scene.add(house);
+        computeFloorLevels();
         frameObject(house);
         applyVisibility();
         status.classList.add('ready');
@@ -474,6 +614,9 @@ walkControls.addEventListener('unlock', () => {
 resumeWalkButton.addEventListener('click', () => {
   if (navigationMode === 'walk') walkControls.lock();
 });
+
+mapZoomIn.addEventListener('click', () => setMapZoom(mapZoom * 0.8));
+mapZoomOut.addEventListener('click', () => setMapZoom(mapZoom * 1.25));
 
 document.querySelector('#floor-controls').addEventListener('click', (event) => {
   if (navigationMode === 'walk') return;
@@ -537,6 +680,18 @@ window.addEventListener('keydown', (event) => {
     respawnWalk();
     event.preventDefault();
   }
+  if (event.code === 'KeyM') {
+    toggleTacticalMap();
+    event.preventDefault();
+  }
+  if (['Equal', 'NumpadAdd'].includes(event.code)) {
+    setMapZoom(mapZoom * 0.8);
+    event.preventDefault();
+  }
+  if (['Minus', 'NumpadSubtract'].includes(event.code)) {
+    setMapZoom(mapZoom * 1.25);
+    event.preventDefault();
+  }
 });
 
 window.addEventListener('keyup', (event) => {
@@ -551,6 +706,7 @@ function resize() {
   renderer.setSize(width, height, false);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
+  if (!minimap.hidden) resizeMinimapRenderer();
 }
 
 new ResizeObserver(resize).observe(mount);
@@ -563,4 +719,5 @@ renderer.setAnimationLoop(() => {
   }
   if (selectionHelper) selectionHelper.update();
   renderer.render(scene, camera);
+  if (navigationMode === 'walk') renderMinimap();
 });
