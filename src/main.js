@@ -2,11 +2,16 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { initProject, getProject, setRenovation, getRenovation, removeRenovation, countRenovationStatuses, getRenovationMap, setRenovationMap, setProject, baseModel } from './project/ProjectStore.js';
+import { initProject, getProject, setRenovation, getRenovation, removeRenovation, countRenovationStatuses, getRenovationMap, setRenovationMap, setProject, baseModel, getJoints, getJoint, getWalls, getWall, addWall, removeWall, updateWall, addJoint, removeJoint, setJointPosition, getWallsForJoint } from './project/ProjectStore.js';
 import { subscribe as subscribeProject } from './project/ProjectStore.js';
 import { History } from './app/History.js';
 import { downloadProject, createUploadInput, triggerUpload } from './project/serialization.js';
 import { computeFingerprint } from './project/schema.js';
+import { getOrCreateJoint, moveJointGraph } from './geometry/JointGraph.js';
+import { computeBuildingHeading } from './geometry/BuildingAxes.js';
+import { createWallMesh, applyWallTransform, computeWallTransform } from './rendering/WallEngine.js';
+import { nextId } from './shared/id.js';
+import { snapToJoints, snapToFloorPlane } from './project/snapping.js';
 import './style.css';
 
 const STORAGE_KEY = 'house3d-renovation-v1';
@@ -69,7 +74,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
 
 const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 500);
-camera.position.set(12, 9, 14);
+camera.position.set(0, 7, 16);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -120,6 +125,13 @@ const clock = new THREE.Clock();
 
 let pointerDown = null;
 let house = null;
+// Architectural-north / buildingHeading: compass heading (radians, 0 = −Z/north,
+// +X = +90° east) of the house's principal wall axis, detected from geometry.
+// Reused by POV spawn and future snapping / wall construction / dimensioning.
+let buildingHeading = 0;
+export function getBuildingHeading() {
+  return buildingHeading;
+}
 let initialView = null;
 let selectionHelper = null;
 let selectedObject = null;
@@ -128,6 +140,7 @@ let walkableMeshes = [];
 let groundMeshes = [];
 let collisionMeshes = [];
 const buildObjects = new Set();
+const wallMeshes = new Map(); // wallId -> THREE.Mesh (joint-based walls)
 let currentLookObject = null;
 let mapZoom = 5.5;
 let mapExpanded = false;
@@ -139,8 +152,14 @@ buildRoot.name = 'Local_Renovation_Build';
 scene.add(buildRoot);
 let buildMode = 'none';
 let buildStart = null;
+let buildStartJoint = null; // joint reused for chained walls (M3)
 let buildPreview = null;
 let outsideGround = null;
+let jointEditMode = false;
+let draggedJointId = null; // joint being dragged (M3)
+const jointRoot = new THREE.Group();
+jointRoot.name = 'Joint_Markers';
+scene.add(jointRoot);
 
 const keys = new Set();
 const player = {
@@ -184,12 +203,78 @@ function registerBuildMesh(mesh, walkable=false, collidable=true) {
   groundMeshes.push(mesh); if (walkable) walkableMeshes.push(mesh); if (collidable) collisionMeshes.push(mesh);
 }
 function createWallItem(item, persist=false) {
+  // Legacy placement-based wall (used only for previously-saved data).
   const a=new THREE.Vector3(...item.a), b=new THREE.Vector3(...item.b); const d=b.clone().sub(a); d.y=0;
   const len=Math.max(.15,d.length()), h=item.height||2.5, t=item.thickness||.12;
   const mesh=new THREE.Mesh(new THREE.BoxGeometry(len,h,t),makeBuildMaterial());
   mesh.name=item.id||`Proposed_Wall_${Date.now()}`; mesh.position.copy(a).add(b).multiplyScalar(.5); mesh.position.y=(item.baseY??a.y)+h/2;
   mesh.rotation.y=-Math.atan2(d.z,d.x); registerBuildMesh(mesh,false,true);
   if(persist){buildItems.push({...item,id:mesh.name,type:'wall'});saveBuildItems();} return mesh;
+}
+// M3: render a joint-based wall record via WallEngine and track its mesh.
+function createJointWallMesh(wallDef) {
+  const { mesh } = createWallMesh(wallDef, makeBuildMaterial()) || {};
+  if (!mesh) return null;
+  registerBuildMesh(mesh, false, true);
+  wallMeshes.set(wallDef.id, mesh);
+  return mesh;
+}
+// M3: rebuild all joint walls from project state. Stairs handled separately.
+function rebuildJointWalls() {
+  wallMeshes.clear();
+  for (const wall of _project.walls || []) {
+    if (wall.startJointId && wall.endJointId) {
+      const existing = wallMeshes.get(wall.id);
+      if (existing) continue;
+      createJointWallMesh(wall);
+    }
+  }
+}
+// M3: render small markers for every joint so shared endpoints are visible
+// and draggable. Each marker stores its jointId in userData.
+function rebuildJointMarkers() {
+  for (const marker of [...jointRoot.children]) marker.removeFromParent();
+  for (const joint of getJoints()) {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.06, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xd3772e })
+    );
+    marker.name = `Joint_${joint.id}`;
+    marker.position.set(...joint.position);
+    marker.userData.jointId = joint.id;
+    jointRoot.add(marker);
+  }
+}
+function toggleJointEditMode() {
+  jointEditMode = !jointEditMode;
+  if (jointEditMode) rebuildJointMarkers();
+  else {
+    jointRoot.visible = false;
+    for (const m of [...jointRoot.children]) m.removeFromParent();
+    draggedJointId = null;
+  }
+}
+// M3: move a joint (shared endpoints propagate to connected walls) and refresh
+// the wall meshes + their dimensions live.
+function moveJointLive(jointId, worldPos) {
+  const affected = moveJointGraph(jointId, [worldPos.x, worldPos.y, worldPos.z]);
+  for (const wallId of affected) {
+    const wall = getWall(wallId);
+    const mesh = wallMeshes.get(wallId);
+    if (wall && mesh) applyWallTransform(mesh, wall);
+  }
+  const marker = jointRoot.children.find((m) => m.userData.jointId === jointId);
+  if (marker) marker.position.copy(worldPos);
+}
+// M3: place a world point onto the horizontal drag plane through the joint.
+function dragPlaneFromJoint(jointId, pointerNDC) {
+  const joint = getJoint(jointId);
+  if (!joint) return null;
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -joint.position[1]);
+  const ray = raycaster.ray.setFromCamera(pointerNDC, camera);
+  const hit = new THREE.Vector3();
+  if (!ray.intersectPlane(plane, hit)) return null;
+  return hit;
 }
 function createStairItem(item,persist=false) {
   const a=new THREE.Vector3(...item.a), b=new THREE.Vector3(...item.b); const rise=(item.topY??b.y)-(item.baseY??a.y);
@@ -198,7 +283,9 @@ function createStairItem(item,persist=false) {
   for(let i=0;i<steps;i++){const y=(item.baseY??a.y)+(rise/steps)*(i+.5); const pos=new THREE.Vector3(a.x,y,a.z).addScaledVector(dir,depth*(i+.5)); const step=new THREE.Mesh(new THREE.BoxGeometry(depth,Math.abs(rise)/steps+.04,width),makeBuildMaterial()); step.position.copy(pos); step.rotation.y=-Math.atan2(dir.z,dir.x); step.name=`${group.name}_step_${i+1}`; step.userData.localBuild=true; step.castShadow=true;step.receiveShadow=true;captureOriginalMaterial(step);group.add(step);buildObjects.add(step);groundMeshes.push(step);walkableMeshes.push(step);collisionMeshes.push(step);}
   if(persist){buildItems.push({...item,id:group.name,type:'stairs'});saveBuildItems();} return group;
 }
-function restoreBuildItems(){for(const item of buildItems){if(item.type==='wall')createWallItem(item);if(item.type==='stairs')createStairItem(item);} }
+function restoreBuildItems(){
+  rebuildJointWalls();
+  for(const item of buildItems){if(item.type==='wall')createWallItem(item);if(item.type==='stairs')createStairItem(item);} }
 
 function removeAllBuildMeshes() {
   // Remove all tracked build objects (walls + stair groups/steps) from the scene
@@ -208,6 +295,7 @@ function removeAllBuildMeshes() {
     obj.removeFromParent();
   }
   buildObjects.clear();
+  wallMeshes.clear();
   groundMeshes = removeFrom(groundMeshes);
   walkableMeshes = removeFrom(walkableMeshes);
   collisionMeshes = removeFrom(collisionMeshes);
@@ -215,13 +303,18 @@ function removeAllBuildMeshes() {
 
 function rebuildBuildMeshes() {
   // Remove current visuals, then re-sync buildItems from project state and recreate.
+  // Joint-based walls render directly from _project.walls; only legacy
+  // placement-based items (old data) and stairs go through buildItems.
   removeAllBuildMeshes();
   buildItems = [];
   const walls = _project.walls || [];
   const stairs = _project.stairs || [];
   for (const wall of walls) {
-    if (wall.placement) buildItems.push({ ...wall.placement, type: 'wall', id: wall.id });
-    else buildItems.push({ id: wall.id, type: 'wall', a: wall.a, b: wall.b, baseY: wall.baseY, height: wall.height, thickness: wall.thickness });
+    if (!wall.startJointId || !wall.endJointId) {
+      // Legacy placement-based wall kept for backward compatibility.
+      if (wall.placement) buildItems.push({ ...wall.placement, type: 'wall', id: wall.id });
+      else if (wall.a && wall.b) buildItems.push({ id: wall.id, type: 'wall', a: wall.a, b: wall.b, baseY: wall.baseY, height: wall.height, thickness: wall.thickness });
+    }
   }
   for (const stair of stairs) {
     if (stair.placement) buildItems.push({ ...stair.placement, type: 'stairs', id: stair.id });
@@ -238,23 +331,66 @@ function buildPointFromPointer(event){
   const rect=renderer.domElement.getBoundingClientRect(); pointer.x=((event.clientX-rect.left)/rect.width)*2-1; pointer.y=-((event.clientY-rect.top)/rect.height)*2+1; raycaster.setFromCamera(pointer,camera);
   const targets=[...groundMeshes].filter(x=>x.visible); const hits=raycaster.intersectObjects(targets,false); return hits[0]?.point?.clone()||null;
 }
-function setBuildMode(mode){buildMode=mode;buildStart=null;if(buildPreview){buildPreview.removeFromParent();buildPreview=null;} document.body.dataset.buildMode=mode; const el=document.querySelector('#build-status');if(el)el.textContent=mode==='wall'?'ADD WALL: click start + end':mode==='stairs'?'ADD STAIRS: click bottom + top':'Build tools ready';}
+function snapBuildPoint(point) {
+  // Snap to an existing joint when within tolerance, else to nearest floor plane.
+  const jointSnap = snapToJoints({ x: point.x, y: point.y, z: point.z }, getJoints(), buildStartJoint?.id || null);
+  if (jointSnap) return jointSnap.position;
+  return [point.x, point.y, point.z];
+}
+// M3: create (or reuse) a joint at a snapped world position.
+function jointAt(point, snap = true) {
+  const snapped = snap ? snapBuildPoint(point) : [point.x, point.y, point.z];
+  return getOrCreateJoint({ x: snapped[0], y: snapped[1], z: snapped[2] });
+}
+function setBuildMode(mode){buildMode=mode;buildStart=null;buildStartJoint=null;if(buildPreview){buildPreview.removeFromParent();buildPreview=null;} document.body.dataset.buildMode=mode; const el=document.querySelector('#build-status');if(el)el.textContent=mode==='wall'?'ADD WALL: click start + end':mode==='stairs'?'ADD STAIRS: click bottom + top':'Build tools ready';}
 function handleBuildClick(event){
   if(navigationMode!=='orbit'||buildMode==='none')return false; const point=buildPointFromPointer(event); if(!point)return true;
-  if(!buildStart){buildStart=point; const el=document.querySelector('#build-status');if(el)el.textContent='Now click the end point';return true;}
+  if(!buildStart){
+    buildStart=point.clone();
+    const el=document.querySelector('#build-status');if(el)el.textContent='Now click the end point';return true;
+  }
   history.record(() => {
-    if(buildMode==='wall'){createWallItem({a:buildStart.toArray(),b:point.toArray(),baseY:Math.min(buildStart.y,point.y),height:2.5,thickness:.12},true);}
+    if(buildMode==='wall'){
+      // M3: joint-based wall creation — reuse snapping to join chains.
+      const start = jointAt(buildStart, true);
+      const end = jointAt(point, true);
+      if (start.joint.id === end.joint.id) return;
+      const wallDef = addWall({
+        id: nextId('w'),
+        startJointId: start.joint.id,
+        endJointId: end.joint.id,
+        baseY: Math.min(buildStart.y, point.y),
+        height: 2.5,
+        thickness: 0.12,
+      });
+      createJointWallMesh(wallDef);
+      if (jointEditMode) rebuildJointMarkers();
+    }
     if(buildMode==='stairs'){let base=buildStart.clone(),top=point.clone(); if(Math.abs(top.y-base.y)<.5){const current=currentMapFloor();const levels=[...floorLevels.entries()].sort((a,b)=>a[1]-b[1]);const idx=levels.findIndex(x=>x[0]===current);const next=levels[Math.min(idx+1,levels.length-1)];if(next)top.y=next[1];} createStairItem({a:base.toArray(),b:top.toArray(),baseY:base.y,topY:top.y,width:.9},true);}
   });
-  buildStart=null; const el=document.querySelector('#build-status');if(el)el.textContent='Placed. Click another start point or Esc to finish'; return true;
+  buildStart=null; buildStartJoint=null; const el=document.querySelector('#build-status');if(el)el.textContent='Placed. Click another start point or Esc to finish'; return true;
 }
-function deleteSelectedBuild(){if(!selectedObject)return false;let n=selectedObject;while(n&&n!==buildRoot&&!n.userData.localBuild)n=n.parent;if(!n||n===buildRoot)return false;const root=n.parent===buildRoot?n:n.parent;const id=root.name;root.removeFromParent();buildItems=buildItems.filter(x=>x.id!==id);saveBuildItems();clearSelection();return true;}
+function deleteSelectedBuild(){if(!selectedObject)return false;let n=selectedObject;while(n&&n!==buildRoot&&!n.userData.localBuild)n=n.parent;if(!n||n===buildRoot)return false;
+  const root=n.parent===buildRoot?n:n.parent;
+  // Joint-based wall: remove the wall record (prunes orphan joints) + mesh.
+  const wallId = n.userData?.wallId || root.userData?.wallId || (root.name.startsWith('Wall_') ? root.name.slice(5) : null);
+  if (wallId && getWall(wallId)) {
+    removeWall(wallId);
+    const mesh = wallMeshes.get(wallId);
+    if (mesh) { mesh.removeFromParent(); buildObjects.delete(mesh); wallMeshes.delete(wallId); }
+    if (jointEditMode) rebuildJointMarkers();
+    clearSelection();
+    return true;
+  }
+  // Legacy placement item (stair or old wall).
+  const id=root.name;root.removeFromParent();buildItems=buildItems.filter(x=>x.id!==id);saveBuildItems();clearSelection();return true;}
 
 function applyHistoryRestore() {
   // Sync renovation map from restored project state.
   renovationData = _project.renovation || {};
   // Rebuild build geometry from restored walls/stairs.
   rebuildBuildMeshes();
+  if (jointEditMode) rebuildJointMarkers();
   // Apply visual + count state. Navigation mode/camera are intentionally untouched.
   updateSelectionEditor();
   updateRenovationCounts();
@@ -281,7 +417,9 @@ function frameObject(object) {
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(size.x, size.y, size.z);
   const distance = radius / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.35;
-  const direction = new THREE.Vector3(1, 0.7, 1).normalize();
+  // Face a main facade head-on (axis-aligned) so walls stand screen-vertical
+  // instead of leaning in the old diagonal corner perspective.
+  const direction = new THREE.Vector3(0, 0.42, 1).normalize();
   camera.position.copy(center).add(direction.multiplyScalar(distance));
   orbitControls.target.copy(center);
   camera.near = Math.max(radius / 1000, 0.01);
@@ -874,8 +1012,21 @@ function respawnWalk() {
   teleportToFloor('1');
 }
 
+/**
+ * Set the first-person POV look direction for a camera yaw.
+ *
+ * Faces along compass `heading` (0 = −Z/north, +X = +90° east): yaw = −heading.
+ * Uses a 'YXZ' Euler (pitch=0, roll=0) which is exactly the frame
+ * PointerLockControls reads/writes, so the initial look blends seamlessly
+ * into mouse-look without a yaw jump. Keeps world Y vertical and roll zero.
+ */
+function setPOVOrientation(heading = 0) {
+  camera.rotation.set(0, -heading, 0, 'YXZ');
+}
+
 function enterWalkMode() {
   if (!house || navigationMode === 'walk') return;
+  if (jointEditMode) { toggleJointEditMode(); setBuildMode('none'); }
   navigationMode = 'walk';
   panelInteractionMode = false;
   clearSelection();
@@ -893,7 +1044,9 @@ function enterWalkMode() {
   camera.fov = 72;
   camera.near = 0.04;
   camera.updateProjectionMatrix();
-  camera.rotation.set(0, 0, 0);
+  // Initial POV yaw: face parallel to a principal house wall axis
+  // (architectural north from geometry) with level horizon and no roll.
+  setPOVOrientation(buildingHeading);
   requestAnimationFrame(resizeMinimapRenderer);
   walkControls.lock();
 }
@@ -954,6 +1107,9 @@ async function loadHouse() {
           if (isWalkable(node)) walkableMeshes.push(node);
         });
         scene.add(house);
+        // Detect architectural north from the wall geometry (uses the house's
+        // own world coordinates; the model is never rotated or rescaled).
+        buildingHeading = computeBuildingHeading(house)?.heading ?? 0;
         computeFloorLevels();
         createOutsideGround();
         restoreBuildItems();
@@ -1063,15 +1219,54 @@ document.querySelector('#reset').addEventListener('click', () => {
 
 clearSelectionButton.addEventListener('click', clearSelection);
 
+function ndcFromEvent(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  return new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+}
+function pickJointAtEvent(event) {
+  if (!jointEditMode) return null;
+  const ndc = ndcFromEvent(event);
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObjects(jointRoot.children, false);
+  return hits.length ? hits[0].object : null;
+}
+
 renderer.domElement.addEventListener('pointerdown', (event) => {
   if (navigationMode !== 'orbit' || event.button !== 0) return;
   pointerDown = { x: event.clientX, y: event.clientY };
+  // M3: begin a joint drag when clicking a joint marker in joint-edit mode.
+  if (jointEditMode) {
+    const marker = pickJointAtEvent(event);
+    if (marker) {
+      draggedJointId = marker.userData.jointId;
+      orbitControls.enabled = false; // disable orbit during drag
+      // Snapshot pre-drag state so one undo restores the whole move.
+      history.record(() => {});
+      event.preventDefault();
+      return;
+    }
+  }
+});
+
+renderer.domElement.addEventListener('pointermove', (event) => {
+  if (draggedJointId && jointEditMode) {
+    const pos = dragPlaneFromJoint(draggedJointId, ndcFromEvent(event));
+    if (pos) moveJointLive(draggedJointId, pos);
+  }
 });
 
 renderer.domElement.addEventListener('pointerup', (event) => {
   if (navigationMode !== 'orbit' || event.button !== 0 || !pointerDown || !house) return;
   const movement = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
   pointerDown = null;
+  if (draggedJointId) {
+    draggedJointId = null;
+    orbitControls.enabled = true;
+    return;
+  }
   if (movement > 5) return;
   if (handleBuildClick(event)) return;
   const rect = renderer.domElement.getBoundingClientRect();
@@ -1117,13 +1312,8 @@ if (uploadProjectButton) {
       buildItems = [];
       const migrated = JSON.parse(JSON.stringify(_project.renovation || {}));
       renovationData = migrated;
-      // Restore build items from project structure
-      for (const wall of _project.walls || []) {
-        if (wall.placement) buildItems.push(wall.placement);
-      }
-      for (const stair of _project.stairs || []) {
-        if (stair.placement) buildItems.push(stair.placement);
-      }
+      // Rebuild all build meshes from project state (joint walls + legacy stairs).
+      rebuildBuildMeshes();
       applyVisibility();
       updateRenovationCounts();
       if (loadedFp && storedFp && loadedFp === storedFp) {
@@ -1187,6 +1377,7 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.code === 'KeyB' && navigationMode === 'orbit') { setBuildMode(buildMode==='wall'?'none':'wall'); event.preventDefault(); return; }
   if (event.code === 'KeyN' && navigationMode === 'orbit') { setBuildMode(buildMode==='stairs'?'none':'stairs'); event.preventDefault(); return; }
+  if (event.code === 'KeyJ' && navigationMode === 'orbit') { toggleJointEditMode(); event.preventDefault(); return; }
   if ((event.code === 'Delete' || event.code === 'Backspace') && deleteSelectedAndRecord()) { event.preventDefault(); return; }
 
   if (event.code === 'KeyG') {
@@ -1252,7 +1443,13 @@ window.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('keyup', (event) => keys.delete(event.code));
-window.addEventListener('blur', () => keys.clear());
+window.addEventListener('blur', () => {
+  keys.clear();
+  if (draggedJointId) { draggedJointId = null; orbitControls.enabled = true; }
+});
+renderer.domElement.addEventListener('pointercancel', () => {
+  if (draggedJointId) { draggedJointId = null; orbitControls.enabled = true; }
+});
 
 function resize() {
   const width = mount.clientWidth;

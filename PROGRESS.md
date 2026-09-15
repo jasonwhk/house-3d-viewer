@@ -4,6 +4,119 @@ This is the persistent handoff log for local Codex development and future ChatGP
 
 **Rule:** Codex must update this file at the end of every meaningful development session. Keep newest session first. Do not erase historical entries; summarize/archive older entries if this file becomes too long.
 
+## 2026-09-15 — POV orientation aligned to architectural north
+
+### Checkpoint
+POV / walk initial orientation now faces a principal wall axis of the imported house, detected from its own geometry (no model rotation/rescale). Adds a reusable `buildingHeading` / architectural-north coordinate frame.
+
+### Starting commit
+`2cd1ac9` — M2: Replace reload-based undo with semantic in-memory history
+
+### Diagnosis
+`enterWalkMode()` reset the first-person camera with `camera.rotation.set(0, 0, 0)` (yaw 0 → faces world −Z), ignoring the house's actual orientation. For the imported `house-existing.glb` the principal wall axes are **axis-aligned to world X (≈90°) and Z (≈0°)** (verified by analysis: wall-run histogram showed 90° with 484 hits and 0° with 412 hits; the two principal eigen lines come out at 178.3° and 88.3°, exactly orthogonal — a clean rectilinear grid). The old POV therefore faced −Z, which still happened to be near-principal for *this* model, but the yaw was hardcoded/coincidental and provided no reusable frame.
+
+### Implementation
+1. Added `src/geometry/BuildingAxes.js` — `computeBuildingHeading(house)`:
+   - Walks the house's `Wall_*` meshes, and for every vertical face (world normal |Y| < 0.35) computes the horizontal run direction (normal × up), weighted by horizontal edge length.
+   - Builds a 2×2 covariance matrix (outer products auto-fold the ±180° wall symmetry).
+   - Solves the 2×2 symmetric eigen problem; picks, of the two principal lines, the one in the northern half-plane as **architectural north** (compass heading: 0 = −Z, +X = +90° east, matching the minimap convention).
+   - Returns `{ heading, headingDeg }` (radians/degrees) or `null` when no walls exist.
+2. `main.js`:
+   - State `buildingHeading` (default 0) + exported `getBuildingHeading()` accessor for future snapping / wall construction / dimensioning.
+   - In `loadHouse()` (after `scene.add(house)`) sets `buildingHeading = computeBuildingHeading(house)?.heading ?? 0`.
+   - New `setPOVOrientation(heading)` helper sets `camera.rotation.set(0, -heading, 0, 'YXZ')` — yaw = −heading (compass heading → yaw), pitch = 0, roll = 0. The `YXZ` order is exactly what `PointerLockControls` reads/writes, so the initial look blends into mouse-look without a yaw jump.
+   - `enterWalkMode()` now calls `setPOVOrientation(buildingHeading)` instead of `camera.rotation.set(0, 0, 0)`.
+3. Added `tests/buildingAxes.test.js` (6 tests) covering axis-aligned X/Z walls → north ≈ 0°, a 30°-rotated house → north ≈ 30°, null when no walls, and ignoring horizontal floor planes.
+
+For the real house the detected architectural north is ≈ −1.72° (POV yaw ≈ +1.72°), i.e. POV faces −Z (parallel to the Z-run walls, perpendicular to the dominant X-run walls), with the tiny offset absorbed from the model's small diagonal fragments.
+
+### Files changed
+- `src/geometry/BuildingAxes.js` — NEW: `computeBuildingHeading` architectural-north detection
+- `tests/buildingAxes.test.js` — NEW: unit tests for the axis detection
+- `src/main.js` — import module; `buildingHeading` state + `getBuildingHeading()` accessor; compute on house load; `setPOVOrientation()` helper; use it in `enterWalkMode()`
+
+### Verification
+- `npm run build`: **PASS** (20 modules, no errors)
+- `npm test`: **PASS** (21/21, incl. 6 new BuildingAxes tests)
+- Console/diagnostic verification against the real GLB (via a Node harness using the shipped module):
+  - buildingHeading ≈ −1.72°; POV forward compass heading ≈ 178.29° — **parallel to the 178.29° principal wall line, perpendicular to 88.29°** ✓
+  - camera world up = `(0, 1, 0)`, vertical error 0.0 → **world Y exactly vertical** ✓
+  - forward.y = 0, right.y = 0 → **horizon level, roll zero** ✓
+  - WASD (`updateWalkMovement`) projects the look onto the horizontal plane and crosses with `camera.up` (0,1,0) → **remains horizontal**, unchanged ✓
+  - Orbit path untouched (`exitWalkMode`/`frameObject` write `camera.quaternion` directly; `YXZ` order is harmless) → **Orbit unchanged** ✓
+  - Collision/ground-follow code (`blockedByGeometry`, `findGroundAt`) not modified → **floor/ground collision unchanged** ✓
+- Manual in-browser check still recommended (pointer-lock entry facing a visible wall runs).
+
+### Commits
+- (none — working tree; M3 changes were already uncommitted alongside)
+
+### Decisions / schema changes
+- `buildingHeading` uses compass convention 0 = −Z (world north), +X = +90° east, consistent with the existing minimap player-marker heading.
+- Camera yaw = −heading; set via `YXZ` Euler to match PointerLockControls.
+- Architectural north = the principal wall line in the northern half-plane (deterministic, geometry-derived). POV faces **along** that line (parallel to one principal wall family, perpendicular to the other).
+- `getBuildingHeading()` is the reusable accessor; `computeBuildingHeading(house)` is the geometry pipeline for other consumers.
+
+### Known issues / risks
+- POV yaw is set on walk **entry** only; pressing R / the reset button during walk repositions but preserves the current look (existing behaviour, unchanged).
+- For a perfectly square plan (equal X/Z wall energy) the eigen analysis returns a tie; the northern-half-plane rule still yields a deterministic axis-aligned "north".
+
+### Next action
+Do an in-browser manual check of POV entry (pointer-lock facing a main wall run), then commit the working tree (which also contains the uncommitted M3 joint/wall engine changes).
+
+---
+
+## 2026-09-15 — M3: Connected joint/wall engine (in progress — integration)
+
+### Checkpoint
+M3 — Connected joint/wall engine. Walls now reference stable joints; new proposed walls snap to shared endpoints; moving a shared joint updates connected walls + dimensions live.
+
+### Starting commit
+`2cd1ac9` — M2: Replace reload-based undo with semantic in-memory history
+
+### Completed this session
+Verified the in-progress working tree from the previous session (uncommitted foundation modules) and wired them into `main.js`:
+
+1. Created/reviewed `src/geometry/JointGraph.js`, `src/rendering/WallEngine.js`, `src/project/snapping.js`, `src/project/migration.js`, `src/shared/id.js`, `src/interaction/measurement.js` (foundation modules existed uncommitted).
+2. `ProjectStore` now owns joint/wall CRUD with referential integrity (removeJoint cascades to walls; removeWall prunes orphan joints) and includes `joints` in history snapshots.
+3. Imported the new modules into `main.js`.
+4. Rewrote `handleBuildClick` wall path to be joint-based: start/end clicks go through `getOrCreateJoint` (within 0.25 m snap tolerance), then `addWall`, rendered via `WallEngine.createWallMesh`, tracked in a `wallMeshes` map.
+5. `restoreBuildItems`/`rebuildBuildMeshes` now render joint walls directly from `_project.walls`; legacy placement-based walls and stairs still render via the old path for backward compatibility.
+6. Upload handler now calls `rebuildBuildMeshes()` instead of manually reconstructing placement items.
+7. `deleteSelectedBuild` removes joint walls via `removeWall` (pruning orphan joints) and cleans the mesh.
+8. Added **joint edit mode** (`KeyJ` in Orbit): renders joint marker spheres; click-drag a marker moves the shared joint via `moveJointGraph` and live-refreshes all connected wall meshes + dimensions (`applyWallTransform`). Movement is horizontally constrained to the joint's floor plane. Drag is wrapped in a single history snapshot so one undo reverts the whole move.
+9. History restore (`applyHistoryRestore`) rebuilds joint walls and refreshes joint markers, preserving navigation mode/camera as before.
+10. Added zero-dependency unit tests (`node --test`): `tests/measurement.test.js`, `tests/snapping.test.js`, `tests/migration.test.js` (15 tests, all passing).
+
+### Files changed
+- `src/main.js` — joint-based wall creation, joint edit/drag mode, build-mesh rebuild from joint walls, upload/history integration
+- `src/project/ProjectStore.js` — joint/wall/stairs CRUD, snapshots include joints, unload flush, migration wiring
+- `package.json` — added `"test": "node --test \"tests/*.test.js\""`
+- New untracked: `src/geometry/JointGraph.js`, `src/rendering/WallEngine.js`, `src/project/snapping.js`, `src/project/migration.js`, `src/shared/id.js`, `src/interaction/measurement.js`, `tests/*`
+
+### Verification
+- `npm run build`: **PASS** (19 modules, ~636 kB chunk, no errors)
+- `npm test`: **PASS** (15/15)
+- Manual: NOT yet performed in-browser. Interactive behaviors (chain a 3-wall corner, drag a shared joint, undo/redo) still need a live browser check.
+
+### Commits
+- (none committed — all changes are in the working tree)
+
+### Decisions / schema changes
+- Joint-based walls use `startJointId`/`endJointId`, `baseY`/`height`/`thickness`. Legacy placement-based walls are preserved and still render (backward compatibility).
+- History snapshots now include `joints` so undo/redo covers the joint graph.
+- `SNAP_TOLERANCE = 0.25 m` for joint reuse.
+- Stairs remain placement-based (out of M3 scope).
+
+### Known issues / risks
+- No live browser verification of the new interactions yet.
+- Joint drag refresh calls `applyWallTransform` per wall each pointermove; fine for small graphs, may need throttling at scale.
+- `migrateBuildItemsToJointModel` runs only when a stored project is absent; an existing stored project that still contains placement-based walls is not re-migrated (no migration orchestration yet).
+
+### Next action
+Manually verify M3 exits in a browser: build a 3-wall chain that shares a joint, drag the shared joint, and confirm all connected walls + dimensions update and undo/redo restore correctly; then commit the working tree.
+
+---
+
 ## Current checkpoint
 
 **M1 — Project persistence foundation (COMPLETE ✅)**
