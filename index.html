@@ -67,12 +67,15 @@
       (() => {
         const DATA_KEY = 'house3d-renovation-v1';
         const UNDO_KEY = 'house3d-renovation-undo-v1';
+        const RESUME_POV_KEY = 'house3d-resume-pov-after-undo';
         const readData = () => localStorage.getItem(DATA_KEY) || '{}';
         const readUndo = () => { try { const x = JSON.parse(sessionStorage.getItem(UNDO_KEY) || '[]'); return Array.isArray(x) ? x : []; } catch { return []; } };
         const writeUndo = (stack) => sessionStorage.setItem(UNDO_KEY, JSON.stringify(stack.slice(-30)));
         const snapshot = () => { const stack = readUndo(); const current = readData(); if (stack[stack.length - 1] !== current) { stack.push(current); writeUndo(stack); } };
-        const undo = () => { const stack = readUndo(); if (!stack.length) { document.querySelector('#undo-status').textContent = 'Nothing to undo yet.'; return; } localStorage.setItem(DATA_KEY, stack.pop()); writeUndo(stack); location.reload(); };
-        const restoreAllDemo = () => { let data; try { data = JSON.parse(readData()); } catch { data = {}; } const hasDemo = Object.values(data).some(r => r?.status === 'demolish'); if (!hasDemo) { document.querySelector('#undo-status').textContent = 'No demolished elements to restore.'; return; } snapshot(); for (const record of Object.values(data)) if (record?.status === 'demolish') record.status = 'existing'; localStorage.setItem(DATA_KEY, JSON.stringify(data)); location.reload(); };
+        const preservePOV = () => { if (document.body.classList.contains('walk-mode')) sessionStorage.setItem(RESUME_POV_KEY, '1'); };
+        const reloadPreservingMode = () => { preservePOV(); location.reload(); };
+        const undo = () => { const stack = readUndo(); if (!stack.length) { document.querySelector('#undo-status').textContent = 'Nothing to undo yet.'; return; } localStorage.setItem(DATA_KEY, stack.pop()); writeUndo(stack); reloadPreservingMode(); };
+        const restoreAllDemo = () => { let data; try { data = JSON.parse(readData()); } catch { data = {}; } const hasDemo = Object.values(data).some(r => r?.status === 'demolish'); if (!hasDemo) { document.querySelector('#undo-status').textContent = 'No demolished elements to restore.'; return; } snapshot(); for (const record of Object.values(data)) if (record?.status === 'demolish') record.status = 'existing'; localStorage.setItem(DATA_KEY, JSON.stringify(data)); reloadPreservingMode(); };
 
         document.addEventListener('click', (event) => {
           if (event.target.closest('#status-editor button[data-renovation-status]')) snapshot();
@@ -84,6 +87,22 @@
           if (!editing && (event.metaKey || event.ctrlKey) && event.code === 'KeyZ') { event.preventDefault(); event.stopImmediatePropagation(); undo(); return; }
           if (!editing && ['KeyZ','KeyX','KeyC'].includes(event.code) && !event.metaKey && !event.ctrlKey) snapshot();
         }, true);
+
+        if (sessionStorage.getItem(RESUME_POV_KEY) === '1') {
+          sessionStorage.removeItem(RESUME_POV_KEY);
+          const resumeWhenReady = () => {
+            const walkButton = document.querySelector('#mode-controls button[data-mode="walk"]');
+            const modelReady = document.querySelector('#status')?.classList.contains('ready');
+            if (walkButton && modelReady) {
+              walkButton.click();
+              const msg = document.querySelector('#undo-status');
+              if (msg) msg.textContent = 'Undo applied · POV mode restored.';
+            } else {
+              setTimeout(resumeWhenReady, 80);
+            }
+          };
+          window.addEventListener('DOMContentLoaded', () => setTimeout(resumeWhenReady, 80), { once: true });
+        }
       })();
     </script>
     <script type="module" src="/src/main.js"></script>
