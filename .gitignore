@@ -1,0 +1,8 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Install lock (uncomment if you want it committed)
+# package-lock.json
