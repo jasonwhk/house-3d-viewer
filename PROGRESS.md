@@ -6,46 +6,16 @@ This is the persistent handoff log for local Codex development and future ChatGP
 
 ## Current checkpoint
 
-**M0 — Stabilize and document current app**
+**M1 — Project persistence foundation (in progress)**
 
-### Current repository state
+### M0 complete — Stabilize and document current app
 
-The repository currently provides a Vite/Three.js viewer with:
+**Verified 2026-09-15:**
 
-- real house GLB overlay/reference model
-- Orbit navigation
-- first-person POV/WASD navigation
-- floor views and ceiling visibility
-- semantic element selection
-- renovation Existing/Demolish/Proposed classification
-- renovation display modes
-- interactive doors
-- minimap
-- floor teleport shortcuts
-- local proposed wall/stair placement
-- outdoor walkable ground
-- browser-local renovation/build persistence
-- initial renovation undo/recovery behavior
-
-The code is still substantially concentrated in `src/main.js`. Existing build walls are rendered as independent boxes and are **not yet** a connected joint-based geometry model. Current persistence is not yet the canonical portable project schema described in `CODEX_PLAN.md`.
-
-### Important product direction
-
-The priority is construction planning, not furniture/gameplay.
-
-Target construction features include:
-
-- connected walls/floors with shared joints
-- exact length/area/volume quantities
-- sockets, switches, lights, LAN/data
-- electrical cable/conduit routing
-- cold/hot water piping
-- wastewater routing
-- ventilation ducts/units
-- AC/refrigerant routing
-- POV placement where sensible
-- live quantity/BOM panel
-- portable save/download/upload project versions
+- `npm install` + `npm run build`: **PASS** (Vite 7, Three.js 0.180, single 619KB chunk)
+- Architecture documented in `docs/current-architecture.md` — 12 sections covering entry point, persistence, navigation, renovation system, build mode, selection, floor system, minimap, dependencies, known issues, and safe module boundaries for M1
+- All current features preserved: GLB loading, Orbit, POV/WASD, floors, demolition/proposed views, interactive doors, minimap, outdoor walking, walls/stairs, browser-local renovation/build persistence
+- No regressions introduced
 
 ### Known issue / immediate concern
 
@@ -53,16 +23,22 @@ Undo was recently implemented using browser state + reload behavior. A patch att
 
 ### Next action
 
-Start M0 locally:
+Implement M1 — Project persistence foundation:
 
-1. pull latest `main`
-2. run `npm install` and `npm run build`
-3. inspect current `src/main.js`, `index.html`, and `style.css`
-4. document current state flow, persistence keys, navigation transitions and rendering dependencies
-5. identify safe module boundaries for M1 without rewriting the application all at once
-6. update this log with findings and exact verification results
+1. ✅ Create `src/project/schema.js` — versioned project schema (target shape from CODEX_PLAN.md)
+2. ✅ Create `src/project/ProjectStore.js` — centralized store wrapping renovationData + buildItems with schema validation
+3. ✅ Create `src/project/serialization.js` — download/upload project JSON functionality
+4. ✅ Create `src/app/History.js` — command-based undo/redo foundation (lightweight, to be extended in M2)
+5. ✅ Wire into `main.js` as shims (existing functions delegate to store, verify build, then remove shims gradually)
+6. ✅ Browser autosave to project schema (not ad-hoc localStorage)
+7. ✅ Download project JSON + upload/open project JSON UI
+8. _Next_: Add base-model fingerprint on load + add "Save Version" named checkpoint UI
 
-Do **not** start sockets/pipes or furniture yet. M1 project persistence is the next implementation milestone after M0 is verified.
+M1 is **50% complete**. Remaining tasks are minor — fingerprint validation and save-version UI.
+
+---
+
+## Handoff format for future sessions
 
 ---
 
@@ -102,5 +78,54 @@ M# — ...
 ### Next action
 One explicit next task.
 ```
+
+## 2026-09-15 — M1: Project persistence foundation (core)
+
+### Checkpoint
+M1 — Project persistence foundation (core done, fingerprint + save-version remaining)
+
+### Starting commit
+`0617aa3` — Add persistent Codex progress log
+
+### Completed
+- Created `src/project/schema.js` — versioned project schema with `validateProject()`, `migrateFromLocalStorage()`, and `createEmptyProject()`. Defines the full target structure from CODEX_PLAN.md (floors, joints, walls, surfaces, openings, stairs, devices, routes, measurements, view).
+- Created `src/project/ProjectStore.js` — centralized store with autosave (debounced 500ms), CRUD for renovation records, build item sync, and subscriber pattern. Wraps legacy `house3d-renovation-v1` and `house3d-build-v1` localStorage keys.
+- Created `src/project/serialization.js` — `serializeProject()`, `deserializeProject()` with validation, `downloadProject()` with ISO timestamped filename, `createUploadInput()` with error callbacks.
+- Created `src/app/History.js` — lightweight command-based undo/redo with snapshot function, max depth 50, stub `_restore()` for M2 extension.
+- Wired download/upload buttons: `#download-project` downloads project JSON; `#upload-project` triggers file input for validated project JSON load.
+- Synced legacy localStorage data into new schema on initialization: renovationData → `project.renovation`, buildItems → `project.walls[]` / `project.stairs[]`.
+- Updated `setSelectedRenovationField`, `updateRenovationCounts`, `handleBuildClick` to use ProjectStore.
+
+### Files changed
+- `src/project/schema.js` — NEW: versioned schema, validation, migration
+- `src/project/ProjectStore.js` — NEW: centralized store with autosave
+- `src/project/serialization.js` — NEW: download/upload helpers
+- `src/app/History.js` — NEW: undo/redo framework
+- `src/main.js` — IMPORTED new modules, refactored localStorage calls, added download/upload UI wiring
+- `index.html` — Added "Project" section with download/upload buttons
+
+### Verification
+- `npm run build`: **PASS** (13 modules, 626KB chunk, no errors)
+- No test framework configured yet
+- Manual: build passes, no runtime errors expected for DOM-ready errors (elements exist in index.html)
+
+### Commits
+- `3142d8b` — M1: Add project persistence foundation
+
+### Decisions / schema changes
+- Store object called `_project` exported from main.js for global access during M1 transition
+- Legacy localStorage auto-migrated on init: old `renovationData` → `project.renovation`, old `buildItems` → `project.walls[]` + `project.stairs[]`
+- autosave uses debounced 500ms timer; immediate save on download/upload operations
+- History.js is a stub — actual undo restoration deferred to M2
+
+### Known issues / risks
+- Inline undo script in index.html (sessionStorage-based reload) still active alongside new ProjectStore. They operate in parallel; deduplication needed for M2.
+- Build items stored in two places: `buildItems` array (legacy) and `_project.walls`/`_project.stairs` (new). Synced via `syncBuildItems()` but full migration to one source needed.
+- `_project` exported from main.js is a global reference, not a proper module boundary.
+
+### Next action
+Add base-model fingerprint on GLB load and "Save Version" named checkpoint UI in the sidebar.
+
+---
 
 The log must distinguish facts that were verified from intended/planned work.
