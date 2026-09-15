@@ -2,7 +2,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { initProject, getProject, setRenovation, getRenovation, removeRenovation, countRenovationStatuses } from './project/ProjectStore.js';
+import { subscribe as subscribeProject } from './project/ProjectStore.js';
+import { downloadProject, createUploadInput, triggerUpload } from './project/serialization.js';
 import './style.css';
+
+const STORAGE_KEY = 'house3d-renovation-v1';
+const BUILD_STORAGE_KEY = 'house3d-build-v1'; // BUILD_MODE_V1
 
 const mount = document.querySelector('#canvas-wrap');
 const status = document.querySelector('#status');
@@ -36,11 +42,21 @@ const mapScaleBar = document.querySelector('.map-scale span');
 const mapScaleLabel = document.querySelector('#map-scale-label');
 const mapZoomIn = document.querySelector('#map-zoom-in');
 const mapZoomOut = document.querySelector('#map-zoom-out');
+const downloadProjectButton = document.querySelector('#download-project');
+const uploadProjectButton = document.querySelector('#upload-project');
+const projectStatus = document.querySelector('#project-status');
 
-const STORAGE_KEY = 'house3d-renovation-v1';
-const BUILD_STORAGE_KEY = 'house3d-build-v1'; // BUILD_MODE_V1
-const renovationData = loadRenovationData();
 let renovationView = 'demolition';
+
+// Initialize project store (migrates legacy localStorage on first pass)
+const legacyRenovationData = loadRenovationData();
+let legacyBuildItems = loadBuildItems();
+initProject({ oldRenovationData: legacyRenovationData, oldBuildItems: legacyBuildItems });
+
+// Keep legacy variables in sync for backwards compatibility
+export const _project = getProject();
+let renovationData = _project.renovation || {};
+let buildItems = legacyBuildItems;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
@@ -116,7 +132,6 @@ scene.add(buildRoot);
 let buildMode = 'none';
 let buildStart = null;
 let buildPreview = null;
-let buildItems = loadBuildItems();
 let outsideGround = null;
 
 const keys = new Set();
@@ -133,7 +148,25 @@ function loadBuildItems() {
   try { const v = JSON.parse(localStorage.getItem(BUILD_STORAGE_KEY) || '[]'); return Array.isArray(v) ? v : []; }
   catch { return []; }
 }
-function saveBuildItems() { localStorage.setItem(BUILD_STORAGE_KEY, JSON.stringify(buildItems)); }
+function syncBuildItems() {
+  const current = _project.stairs || [];
+  const walls = _project.walls || [];
+  const counts = new Set([...current.map(s => s.id), ...walls.map(w => w.id)]);
+  for (const item of buildItems) {
+    if (!counts.has(item.id)) {
+      // Add new items to project structure
+      if (item.type === 'wall') {
+        if (!_project.walls) _project.walls = [];
+        _project.walls.push({ id: item.id, baseY: item.baseY ?? 0, height: item.height || 2.5, thickness: item.thickness || 0.12, placement: item });
+      } else if (item.type === 'stairs') {
+        if (!_project.stairs) _project.stairs = [];
+        _project.stairs.push({ id: item.id, baseY: item.baseY ?? 0, topY: item.topY ?? 0, width: item.width || 0.9, placement: item });
+      }
+    }
+  }
+  // Persist immediately
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(_project)); } catch {}
+}
 function floorLevel(f='1') { return floorLevels.get(String(f)) ?? 0; }
 function makeBuildMaterial(opacity=0.82) { return new THREE.MeshStandardMaterial({color:0x4f9a8d,roughness:.72,metalness:0,transparent:opacity<1,opacity}); }
 function registerBuildMesh(mesh, walkable=false, collidable=true) {
@@ -185,12 +218,9 @@ function loadRenovationData() {
   }
 }
 
-function saveRenovationData() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(renovationData));
-  } catch (error) {
-    console.warn('Could not save renovation data', error);
-  }
+function saveBuildItems() {
+  try { syncBuildItems(); localStorage.setItem(BUILD_STORAGE_KEY, JSON.stringify(buildItems)); }
+  catch (error) { console.warn('Could not save build items', error); }
 }
 
 function frameObject(object) {
@@ -370,14 +400,9 @@ function cycleRenovationView() {
 }
 
 function updateRenovationCounts() {
-  let demolish = 0;
-  let proposed = 0;
-  for (const record of Object.values(renovationData)) {
-    if (record?.status === 'demolish') demolish += 1;
-    if (record?.status === 'proposed') proposed += 1;
-  }
-  demolitionCount.textContent = String(demolish);
-  proposedCount.textContent = String(proposed);
+  const counts = countRenovationStatuses();
+  demolitionCount.textContent = String(counts.demolish);
+  proposedCount.textContent = String(counts.proposed);
 }
 
 function updateSelectionEditor() {
@@ -394,9 +419,10 @@ function updateSelectionEditor() {
 function setSelectedRenovationField(field, value) {
   if (!selectedObject) return;
   const key = objectKey(selectedObject);
-  const current = renovationData[key] || { status: 'existing', discipline: 'architecture', note: '' };
+  const current = renovationData[key] || getRenovation(key);
   renovationData[key] = { ...current, [field]: value };
-  saveRenovationData();
+  setRenovation(key, renovationData[key]);
+  saveBuildItems();
   updateSelectionEditor();
   updateRenovationCounts();
   applyVisibility();
@@ -918,9 +944,9 @@ disciplineSelect.addEventListener('change', () => {
 renovationNote.addEventListener('input', () => {
   if (!selectedObject) return;
   const key = objectKey(selectedObject);
-  const current = renovationData[key] || { status: 'existing', discipline: 'architecture', note: '' };
+  const current = renovationData[key] || getRenovation(key);
   renovationData[key] = { ...current, note: renovationNote.value };
-  saveRenovationData();
+  setRenovation(key, renovationData[key]);
 });
 
 modeControls.addEventListener('click', (event) => {
@@ -1002,6 +1028,44 @@ document.querySelector('#add-wall')?.addEventListener('click',()=>setBuildMode('
 document.querySelector('#add-stairs')?.addEventListener('click',()=>setBuildMode('stairs'));
 document.querySelector('#build-cancel')?.addEventListener('click',()=>setBuildMode('none'));
 document.querySelector('#delete-build')?.addEventListener('click',deleteSelectedBuild);
+
+// Project download / upload
+let projectUploadInput = null;
+if (downloadProjectButton) {
+  downloadProjectButton.addEventListener('click', () => {
+    const projectName = getProject().project?.name || 'house';
+    downloadProject(projectName, getProject());
+    projectStatus.textContent = 'Project downloaded.';
+    setTimeout(() => { projectStatus.textContent = 'Project data is saved automatically in this browser. Download to export or share.'; }, 3000);
+  });
+}
+if (uploadProjectButton) {
+  projectUploadInput = createUploadInput(
+    (loadedProject) => {
+      projectUploadInput = null; // clean up
+      setProject(loadedProject);
+      buildItems = [];
+      const migrated = JSON.parse(JSON.stringify(_project.renovation || {}));
+      renovationData = migrated;
+      // Restore build items from project structure
+      for (const wall of _project.walls || []) {
+        if (wall.placement) buildItems.push(wall.placement);
+      }
+      for (const stair of _project.stairs || []) {
+        if (stair.placement) buildItems.push(stair.placement);
+      }
+      applyVisibility();
+      updateRenovationCounts();
+      projectStatus.textContent = 'Project uploaded and loaded.';
+      setTimeout(() => { projectStatus.textContent = 'Project data is saved automatically in this browser. Download to export or share.'; }, 3000);
+    },
+    ({ errors }) => {
+      projectStatus.textContent = 'Upload failed: ' + errors.join('; ');
+      setTimeout(() => { projectStatus.textContent = 'Project data is saved automatically in this browser. Download to export or share.'; }, 5000);
+    }
+  );
+  uploadProjectButton.addEventListener('click', () => triggerUpload(projectUploadInput));
+}
 
 window.addEventListener('keydown', (event) => {
   const target = event.target;
