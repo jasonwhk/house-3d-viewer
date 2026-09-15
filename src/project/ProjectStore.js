@@ -114,6 +114,48 @@ export function removeRenovation(key) {
 }
 
 /**
+ * Get a copy of the full renovation map.
+ * @returns {Record<string, { status: string, discipline: string, note: string }>}
+ */
+export function getRenovationMap() {
+  return JSON.parse(JSON.stringify(project.renovation || {}));
+}
+
+/**
+ * Replace the full renovation map.
+ * @param {Record<string, any>} map
+ */
+export function setRenovationMap(map) {
+  project.renovation = map || {};
+  markModified();
+}
+
+/**
+ * Replace the editable semantic data used by history restore,
+ * without touching metadata like `project` or `baseModel`.
+ *
+ * @param {{ renovation?: object, walls?: any[], stairs?: any[] }} data
+ */
+export function replaceProjectData(data) {
+  if (data && data.renovation !== undefined) project.renovation = data.renovation;
+  if (data && data.walls !== undefined) project.walls = data.walls;
+  if (data && data.stairs !== undefined) project.stairs = data.stairs;
+  markModified();
+}
+
+/**
+ * Capture the editable semantic state as a JSON string (snapshot for history).
+ * @returns {string}
+ */
+export function snapshotProjectData() {
+  return JSON.stringify({
+    renovation: project.renovation || {},
+    walls: project.walls || [],
+    stairs: project.stairs || [],
+  });
+}
+
+/**
  * Count records by status.
  * @returns {{ demolish: number, proposed: number, existing: number }}
  */

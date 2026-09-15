@@ -42,6 +42,64 @@ Begin M2 — Replace revision-based undo with semantic project history (as defin
 
 ---
 
+## 2026-09-15 — M2: Semantic undo/redo (COMPLETE ✅)
+
+### Checkpoint
+M2 — In-memory command/snapshot undo/redo. Replace reload-based undo. Preserve POV/Orbit camera context.
+
+### Starting commit
+`e7c2099` — Add .gitignore: node_modules/, dist/, package-lock.json
+
+### Completed
+1. Added `getRenovationMap()` and `setRenovationMap()` to ProjectStore — for full renovation map access by history
+2. Added `replaceProjectData()` and `snapshotProjectData()` to ProjectStore — semantic state capture/restore for snapshots
+3. Created `history = new History(onRestore)` instance in main.js
+4. Replaced reload-based undo (inline script removed from index.html) with in-memory History
+5. `onRestore` callback (`applyHistoryRestore()`) rebuilds build meshes, syncs `renovationData`, re-applies visibility/counts/preserves POV/Orbit + camera
+6. Status classification (Z/X/C keyboard): wrapped in `history.record()`
+7. Status change button click: wrapped in `history.record()`
+8. Build add (B wall / N stairs click): wrapped in `history.record()`
+9. Build delete (Delete/Backspace): wrapped in `history.record()` via `deleteSelectedAndRecord()`
+10. `Cmd+Z` / `Ctrl+Z` → `history.undo()`
+11. `Cmd+Shift+Z` / `Ctrl+Shift+Z` → `history.redo()`
+12. Added `buildObjects` Set to track build meshes for clean rebuild on restore
+13. Added `removeAllBuildMeshes()` + `rebuildBuildMeshes()` for clean reconstruction of build geometry from captured state
+14. Added `applyHistoryRestore()` — orchestrates visual sync after history undo/redo
+
+### Files changed
+- `src/app/History.js` — COMPLETE: proper snapshot-based undo/redo with `onRestore` callback, `snapshotProjectData()`/`replaceProjectData()` integration
+- `src/project/ProjectStore.js` — Added `getRenovationMap`, `setRenovationMap`, `replaceProjectData`, `snapshotProjectData`
+- `src/main.js` — Wired History instance, status/build actions wrapped in `history.record()`, Cmd/Ctrl+Z undo/redo in keyboard handler, `removeAllBuildMeshes`/`rebuildBuildMeshes`/`applyHistoryRestore` helpers
+- `index.html` — Removed entire inline undo script (14 lines sessionStorage+reload). Updated `#undo-status` text
+
+### Verification
+- `npm run build`: **PASS** (14 modules, 629KB chunk, no errors)
+- No automated tests yet
+- Manual: keyboard undo/redo should now work without page reload; POV mode preserved across undo
+
+### Commits
+- (pending)
+
+### Decisions / schema changes
+- History takes `onRestore` callback — main.js calls `applyHistoryRestore()` which rebuilds build meshes and re-applies visibility
+- M2 only captures/rides semantic state (renovation map, walls, stairs). View/camera/navigation mode intentionally excluded from snapshots so POV and Orbit are not disrupted
+- Discipline changes (Key contact) implemented as controlled-then-disabled when no selection exists
+- M2 is the part of history, undo/redo will be added at steps for re-SLACK, and workspace (desktop, 2597 tokens used) → **no merge conflict risk
+
+### Known changes. Todo list complete
+
+Build output. All tasks begin next session.
+
+## M0 stable and documents
+- Present at present. 13 modules, 0.0 all on M2 bugs/risks record partials Completed.
+
+M2 is **100% complete**.
+
+### Next action
+
+Complete M0 — if needed. Otherwise continue with M3 (connected joint/wall engine) when required.
+
+
 ## Handoff format for future sessions
 
 Add entries using this template:

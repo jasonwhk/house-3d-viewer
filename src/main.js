@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { initProject, getProject, setRenovation, getRenovation, removeRenovation, countRenovationStatuses, baseModel } from './project/ProjectStore.js';
+import { initProject, getProject, setRenovation, getRenovation, removeRenovation, countRenovationStatuses, getRenovationMap, setRenovationMap, setProject, baseModel } from './project/ProjectStore.js';
 import { subscribe as subscribeProject } from './project/ProjectStore.js';
+import { History } from './app/History.js';
 import { downloadProject, createUploadInput, triggerUpload } from './project/serialization.js';
-import { setProject } from './project/ProjectStore.js';
 import { computeFingerprint } from './project/schema.js';
 import './style.css';
 
@@ -60,6 +60,10 @@ initProject({ oldRenovationData: legacyRenovationData, oldBuildItems: legacyBuil
 export const _project = getProject();
 let renovationData = _project.renovation || {};
 let buildItems = legacyBuildItems;
+
+// M2: semantic in-memory history. Restores project state without reloading,
+// preserving navigation mode and camera context.
+const history = new History(() => applyHistoryRestore());
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xebece8);
@@ -123,6 +127,7 @@ let navigationMode = 'orbit';
 let walkableMeshes = [];
 let groundMeshes = [];
 let collisionMeshes = [];
+const buildObjects = new Set();
 let currentLookObject = null;
 let mapZoom = 5.5;
 let mapExpanded = false;
@@ -175,6 +180,7 @@ function makeBuildMaterial(opacity=0.82) { return new THREE.MeshStandardMaterial
 function registerBuildMesh(mesh, walkable=false, collidable=true) {
   mesh.castShadow=true; mesh.receiveShadow=true; mesh.userData.localBuild=true;
   captureOriginalMaterial(mesh); buildRoot.add(mesh);
+  buildObjects.add(mesh);
   groundMeshes.push(mesh); if (walkable) walkableMeshes.push(mesh); if (collidable) collisionMeshes.push(mesh);
 }
 function createWallItem(item, persist=false) {
@@ -188,11 +194,41 @@ function createWallItem(item, persist=false) {
 function createStairItem(item,persist=false) {
   const a=new THREE.Vector3(...item.a), b=new THREE.Vector3(...item.b); const rise=(item.topY??b.y)-(item.baseY??a.y);
   const horizontal=new THREE.Vector3(b.x-a.x,0,b.z-a.z); const run=Math.max(1,horizontal.length()); const steps=Math.max(3,Math.ceil(Math.abs(rise)/.18));
-  const dir=horizontal.normalize(); const width=item.width||.9; const depth=run/steps; const group=new THREE.Group(); group.name=item.id||`Proposed_Stairs_${Date.now()}`; buildRoot.add(group);
-  for(let i=0;i<steps;i++){const y=(item.baseY??a.y)+(rise/steps)*(i+.5); const pos=new THREE.Vector3(a.x,y,a.z).addScaledVector(dir,depth*(i+.5)); const step=new THREE.Mesh(new THREE.BoxGeometry(depth,Math.abs(rise)/steps+.04,width),makeBuildMaterial()); step.position.copy(pos); step.rotation.y=-Math.atan2(dir.z,dir.x); step.name=`${group.name}_step_${i+1}`; step.userData.localBuild=true; step.castShadow=true;step.receiveShadow=true;captureOriginalMaterial(step);group.add(step);groundMeshes.push(step);walkableMeshes.push(step);collisionMeshes.push(step);}
+  const dir=horizontal.normalize(); const width=item.width||.9; const depth=run/steps; const group=new THREE.Group(); group.name=item.id||`Proposed_Stairs_${Date.now()}`; buildRoot.add(group); buildObjects.add(group);
+  for(let i=0;i<steps;i++){const y=(item.baseY??a.y)+(rise/steps)*(i+.5); const pos=new THREE.Vector3(a.x,y,a.z).addScaledVector(dir,depth*(i+.5)); const step=new THREE.Mesh(new THREE.BoxGeometry(depth,Math.abs(rise)/steps+.04,width),makeBuildMaterial()); step.position.copy(pos); step.rotation.y=-Math.atan2(dir.z,dir.x); step.name=`${group.name}_step_${i+1}`; step.userData.localBuild=true; step.castShadow=true;step.receiveShadow=true;captureOriginalMaterial(step);group.add(step);buildObjects.add(step);groundMeshes.push(step);walkableMeshes.push(step);collisionMeshes.push(step);}
   if(persist){buildItems.push({...item,id:group.name,type:'stairs'});saveBuildItems();} return group;
 }
 function restoreBuildItems(){for(const item of buildItems){if(item.type==='wall')createWallItem(item);if(item.type==='stairs')createStairItem(item);} }
+
+function removeAllBuildMeshes() {
+  // Remove all tracked build objects (walls + stair groups/steps) from the scene
+  // and from the mesh tracking arrays, then clear the set.
+  const removeFrom = (arr) => arr.filter(m => !buildObjects.has(m));
+  for (const obj of buildObjects) {
+    obj.removeFromParent();
+  }
+  buildObjects.clear();
+  groundMeshes = removeFrom(groundMeshes);
+  walkableMeshes = removeFrom(walkableMeshes);
+  collisionMeshes = removeFrom(collisionMeshes);
+}
+
+function rebuildBuildMeshes() {
+  // Remove current visuals, then re-sync buildItems from project state and recreate.
+  removeAllBuildMeshes();
+  buildItems = [];
+  const walls = _project.walls || [];
+  const stairs = _project.stairs || [];
+  for (const wall of walls) {
+    if (wall.placement) buildItems.push({ ...wall.placement, type: 'wall', id: wall.id });
+    else buildItems.push({ id: wall.id, type: 'wall', a: wall.a, b: wall.b, baseY: wall.baseY, height: wall.height, thickness: wall.thickness });
+  }
+  for (const stair of stairs) {
+    if (stair.placement) buildItems.push({ ...stair.placement, type: 'stairs', id: stair.id });
+    else buildItems.push({ id: stair.id, type: 'stairs', a: stair.a, b: stair.b, baseY: stair.baseY, topY: stair.topY, width: stair.width });
+  }
+  restoreBuildItems();
+}
 function createOutsideGround(){
   if(outsideGround)return; const box=new THREE.Box3().setFromObject(house); const c=box.getCenter(new THREE.Vector3());
   const g=new THREE.Mesh(new THREE.PlaneGeometry(55,55),new THREE.MeshStandardMaterial({color:0x77836c,roughness:1,transparent:true,opacity:.72}));
@@ -206,11 +242,24 @@ function setBuildMode(mode){buildMode=mode;buildStart=null;if(buildPreview){buil
 function handleBuildClick(event){
   if(navigationMode!=='orbit'||buildMode==='none')return false; const point=buildPointFromPointer(event); if(!point)return true;
   if(!buildStart){buildStart=point; const el=document.querySelector('#build-status');if(el)el.textContent='Now click the end point';return true;}
-  if(buildMode==='wall'){createWallItem({a:buildStart.toArray(),b:point.toArray(),baseY:Math.min(buildStart.y,point.y),height:2.5,thickness:.12},true);}
-  if(buildMode==='stairs'){let base=buildStart.clone(),top=point.clone(); if(Math.abs(top.y-base.y)<.5){const current=currentMapFloor();const levels=[...floorLevels.entries()].sort((a,b)=>a[1]-b[1]);const idx=levels.findIndex(x=>x[0]===current);const next=levels[Math.min(idx+1,levels.length-1)];if(next)top.y=next[1];} createStairItem({a:base.toArray(),b:top.toArray(),baseY:base.y,topY:top.y,width:.9},true);}
+  history.record(() => {
+    if(buildMode==='wall'){createWallItem({a:buildStart.toArray(),b:point.toArray(),baseY:Math.min(buildStart.y,point.y),height:2.5,thickness:.12},true);}
+    if(buildMode==='stairs'){let base=buildStart.clone(),top=point.clone(); if(Math.abs(top.y-base.y)<.5){const current=currentMapFloor();const levels=[...floorLevels.entries()].sort((a,b)=>a[1]-b[1]);const idx=levels.findIndex(x=>x[0]===current);const next=levels[Math.min(idx+1,levels.length-1)];if(next)top.y=next[1];} createStairItem({a:base.toArray(),b:top.toArray(),baseY:base.y,topY:top.y,width:.9},true);}
+  });
   buildStart=null; const el=document.querySelector('#build-status');if(el)el.textContent='Placed. Click another start point or Esc to finish'; return true;
 }
 function deleteSelectedBuild(){if(!selectedObject)return false;let n=selectedObject;while(n&&n!==buildRoot&&!n.userData.localBuild)n=n.parent;if(!n||n===buildRoot)return false;const root=n.parent===buildRoot?n:n.parent;const id=root.name;root.removeFromParent();buildItems=buildItems.filter(x=>x.id!==id);saveBuildItems();clearSelection();return true;}
+
+function applyHistoryRestore() {
+  // Sync renovation map from restored project state.
+  renovationData = _project.renovation || {};
+  // Rebuild build geometry from restored walls/stairs.
+  rebuildBuildMeshes();
+  // Apply visual + count state. Navigation mode/camera are intentionally untouched.
+  updateSelectionEditor();
+  updateRenovationCounts();
+  applyVisibility();
+}
 
 function loadRenovationData() {
   try {
@@ -944,7 +993,7 @@ renovationViewControls.addEventListener('click', (event) => {
 statusEditor.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-renovation-status]');
   if (!button || !selectedObject) return;
-  setSelectedRenovationField('status', button.dataset.renovationStatus);
+  history.record(() => { setSelectedRenovationField('status', button.dataset.renovationStatus); });
 });
 
 disciplineSelect.addEventListener('change', () => {
@@ -1037,7 +1086,12 @@ renderer.domElement.addEventListener('pointerup', (event) => {
 document.querySelector('#add-wall')?.addEventListener('click',()=>setBuildMode('wall'));
 document.querySelector('#add-stairs')?.addEventListener('click',()=>setBuildMode('stairs'));
 document.querySelector('#build-cancel')?.addEventListener('click',()=>setBuildMode('none'));
-document.querySelector('#delete-build')?.addEventListener('click',deleteSelectedBuild);
+// M2: delete-selected-with-history (wraps deleteSelectedBuild for undo)
+function deleteSelectedAndRecord() {
+  if (!selectedObject) return false;
+  history.record(() => { deleteSelectedBuild(); });
+  return true;
+}
 
 // Project download / upload
 let projectUploadInput = null;
@@ -1120,9 +1174,20 @@ window.addEventListener('keydown', (event) => {
   if (editing) return;
 
   if (event.code === 'Escape' && buildMode !== 'none') { setBuildMode('none'); event.preventDefault(); return; }
+
+  // M2: Cmd/Ctrl+Z undo, Cmd+Shift+Z / Ctrl+Shift+Z redo
+  const metaOrCtrl = event.metaKey || event.ctrlKey;
+  if (metaOrCtrl && event.code === 'KeyZ' && !event.shiftKey) {
+    if (history.undo()) { event.preventDefault(); }
+    return;
+  }
+  if (metaOrCtrl && event.code === 'KeyZ' && event.shiftKey) {
+    if (history.redo()) { event.preventDefault(); }
+    return;
+  }
   if (event.code === 'KeyB' && navigationMode === 'orbit') { setBuildMode(buildMode==='wall'?'none':'wall'); event.preventDefault(); return; }
   if (event.code === 'KeyN' && navigationMode === 'orbit') { setBuildMode(buildMode==='stairs'?'none':'stairs'); event.preventDefault(); return; }
-  if ((event.code === 'Delete' || event.code === 'Backspace') && deleteSelectedBuild()) { event.preventDefault(); return; }
+  if ((event.code === 'Delete' || event.code === 'Backspace') && deleteSelectedAndRecord()) { event.preventDefault(); return; }
 
   if (event.code === 'KeyG') {
     cycleRenovationView();
@@ -1132,7 +1197,7 @@ window.addEventListener('keydown', (event) => {
 
   const statusShortcut = { KeyZ: 'existing', KeyX: 'demolish', KeyC: 'proposed' }[event.code];
   if (statusShortcut && selectedObject) {
-    setSelectedRenovationField('status', statusShortcut);
+    history.record(() => { setSelectedRenovationField('status', statusShortcut); });
     event.preventDefault();
     return;
   }

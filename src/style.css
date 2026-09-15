@@ -10,7 +10,8 @@ canvas { display: block; }
 .topbar { position: absolute; z-index: 5; top: 0; left: 0; right: 0; height: 86px; padding: 20px 26px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
 .eyebrow, .section-title { margin: 0 0 4px; font: 500 10px/1.2 'DM Mono', monospace; letter-spacing: .14em; color: #69716c; }
 h1 { margin: 0; font-size: 23px; letter-spacing: -.04em; }
-.status { background: rgba(250,250,247,.86); backdrop-filter: blur(14px); border: 1px solid rgba(35,48,40,.12); border-radius: 999px; padding: 9px 12px; font-size: 11px; color: #5e6761; }
+.status { background: rgba(250,250,247,.86); backdrop-filter: blur(14px); border: 1px solid rgba(35,48,40,.12); border-radius: 999px; padding: 9px 12px; font-size: 11px; color: #5e6761; display: flex; align-items: center; gap: 8px; }
+.build-info { font: 500 9px/1 'DM Mono', monospace; color: #8a918c; letter-spacing: .04em; margin-left: 2px; }
 .status span { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #c99635; }
 .status.ready span { background: #4b8d60; }
 .status.error span { background: #b9574f; }

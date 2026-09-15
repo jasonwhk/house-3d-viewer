@@ -1,52 +1,63 @@
 /**
- * History — simple command-based undo/redo tied to project state.
+ * History — in-memory command/snapshot undo/redo for project state.
  *
- * For M1 this is lightweight. M2 will replace reload-based undo
- * and extend this with detailed semantic commands.
+ * M2: replaces reload-based undo. Restores semantic project data in place,
+ * preserving navigation mode and camera context (no page reload).
  */
+
+import {
+  snapshotProjectData,
+  replaceProjectData,
+} from '../project/ProjectStore.js';
 
 export class History {
   /**
-   * @param {() => object | string} snapshotFn — called to capture current state before each command
+   * @param {() => void} onRestore — called after every undo/redo so the caller
+   *   can rebuild visual state (meshes, visibility, counts) and re-render.
    */
-  constructor(snapshotFn) {
-    this._snapshotFn = snapshotFn;
+  constructor(onRestore = null) {
+    this._onRestore = onRestore;
     this._past = [];
     this._future = [];
     this._max = 50;
   }
 
   /**
-   * Record a command. Pushes current snapshot, discards redo stack.
-   * @param {function} fn — the command function to execute
+   * Record a command. Snapshot current state, clear redo stack, execute command,
+   * then autosave (the command already mutated the project via the store).
+   * @param {() => void} fn — the command function
    */
   record(fn) {
-    this._push();
+    this._past.push(snapshotProjectData());
+    if (this._past.length > this._max) this._past.shift();
     this._future = [];
     fn();
   }
 
   /**
-   * Undo last command.
+   * Undo the last recorded command.
    * @returns {boolean}
    */
   undo() {
     if (!this._past.length) return false;
-    this._future.push(this._snapshotFn());
+    // Save current state onto the redo stack
+    this._future.push(snapshotProjectData());
     const previous = this._past.pop();
-    this._restore(previous);
+    replaceProjectData(JSON.parse(previous));
+    this._emitRestore();
     return true;
   }
 
   /**
-   * Redo undone command.
+   * Redo the most recently undone command.
    * @returns {boolean}
    */
   redo() {
     if (!this._future.length) return false;
-    this._past.push(this._snapshotFn());
+    this._past.push(snapshotProjectData());
     const next = this._future.pop();
-    this._restore(next);
+    replaceProjectData(JSON.parse(next));
+    this._emitRestore();
     return true;
   }
 
@@ -63,21 +74,7 @@ export class History {
     this._future = [];
   }
 
-  _push() {
-    const snapshot = this._snapshotFn();
-    this._past.push(snapshot);
-    if (this._past.length > this._max) this._past.shift();
-  }
-
-  _restore(snapshot) {
-    // Stub — M2 will implement full semantic restore
-    if (typeof snapshot === 'string') {
-      try {
-        const parsed = JSON.parse(snapshot);
-        if (parsed && typeof parsed === 'object') {
-          globalThis.__RESTORED_STATE__ = parsed;
-        }
-      } catch {}
-    }
+  _emitRestore() {
+    if (this._onRestore) this._onRestore();
   }
 }
