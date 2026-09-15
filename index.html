@@ -4,13 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#101412" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>House 3D Viewer</title>
   </head>
   <body>
     <div id="app">
       <header class="topbar">
         <div>
-          <p class="eyebrow">INTERACTIVE RENOVATION MODEL</p>
+          <p class="eyebrow">INTERACTIVE RENOVATION MODEL · BUILD MODE</p>
           <h1>House 3D Viewer</h1>
         </div>
         <div class="status" id="status"><span></span> Loading model</div>
@@ -29,6 +32,18 @@
           </div>
         </section>
 
+        <section class="build-section">
+          <p class="section-title">Build / edit · NEW</p>
+          <div class="build-tools">
+            <button id="add-wall">B · Add wall</button>
+            <button id="add-stairs">N · Add stairs</button>
+            <button id="delete-build">Delete selected</button>
+            <button id="build-cancel">Cancel tool</button>
+          </div>
+          <p class="local-note" id="build-status">Build tools ready · click two points in Orbit mode.</p>
+          <p class="local-note">New geometry is stored only in this browser. Outdoor ground is walkable in POV.</p>
+        </section>
+
         <section>
           <p class="section-title">Renovation view · G cycles</p>
           <div class="renovation-view" id="renovation-view-controls">
@@ -42,18 +57,6 @@
             <span><i class="legend-dot proposed"></i><b id="proposed-count">0</b> proposed</span>
           </div>
           <p class="local-note">Default: semi-transparent demolition view. Planning data stays in this browser only.</p>
-        </section>
-
-        <section class="build-section">
-          <p class="section-title">Build / edit</p>
-          <div class="build-tools">
-            <button id="add-wall">B · Add wall</button>
-            <button id="add-stairs">N · Add stairs</button>
-            <button id="delete-build">Delete selected</button>
-            <button id="build-cancel">Cancel tool</button>
-          </div>
-          <p class="local-note" id="build-status">Build tools ready · click two points in Orbit mode.</p>
-          <p class="local-note">New geometry is stored only in this browser. Outdoor ground is walkable in POV.</p>
         </section>
 
         <section>
@@ -84,67 +87,24 @@
               <div><dt>Floor</dt><dd id="selected-floor">—</dd></div>
               <div><dt>Status</dt><dd id="selected-status">Existing</dd></div>
             </dl>
-
             <p class="field-label">Renovation status</p>
             <div class="status-editor" id="status-editor">
               <button data-renovation-status="existing">Z · Existing</button>
               <button data-renovation-status="demolish">X · Demolish</button>
               <button data-renovation-status="proposed">C · Proposed</button>
             </div>
-
-            <label class="field-block">
-              <span class="field-label">Discipline</span>
-              <select id="discipline-select">
-                <option value="architecture">Architecture</option>
-                <option value="electrical">Electrical</option>
-                <option value="ventilation">Ventilation</option>
-                <option value="hvac">HVAC / AC</option>
-                <option value="plumbing">Plumbing</option>
-              </select>
-            </label>
-
-            <label class="field-block">
-              <span class="field-label">Private note</span>
-              <textarea id="renovation-note" rows="3" placeholder="e.g. remove wall, new pocket door…"></textarea>
-            </label>
+            <label class="field-block"><span class="field-label">Discipline</span><select id="discipline-select"><option value="architecture">Architecture</option><option value="electrical">Electrical</option><option value="ventilation">Ventilation</option><option value="hvac">HVAC / AC</option><option value="plumbing">Plumbing</option></select></label>
+            <label class="field-block"><span class="field-label">Private note</span><textarea id="renovation-note" rows="3" placeholder="e.g. remove wall, new pocket door…"></textarea></label>
           </div>
           <button class="clear-selection" id="clear-selection" hidden>Clear selection</button>
         </section>
-
         <button class="reset" id="reset">Reset camera</button>
       </aside>
 
       <div id="canvas-wrap"></div>
-
-      <div class="pov-hud" id="pov-hud" hidden>
-        <div class="crosshair" id="crosshair"><span></span><span></span></div>
-        <div class="look-label" id="look-label">Aim at an element · E to select</div>
-      </div>
-
-      <aside class="minimap" id="minimap" hidden>
-        <div class="minimap-head">
-          <span id="minimap-floor">FLOOR 1</span>
-          <span class="minimap-key">M · MAP</span>
-        </div>
-        <div class="minimap-viewport" id="minimap-viewport">
-          <div class="north-marker">N</div>
-          <div class="player-marker" id="player-marker"><span></span></div>
-          <div class="map-scale"><span></span><b id="map-scale-label">2 m</b></div>
-        </div>
-        <div class="minimap-controls">
-          <button id="map-zoom-out" aria-label="Zoom map out">−</button>
-          <span id="minimap-mode-label">LOCAL MAP</span>
-          <button id="map-zoom-in" aria-label="Zoom map in">+</button>
-        </div>
-      </aside>
-
-      <div class="pointer-lock-card" id="pointer-lock-card" hidden>
-        <p class="eyebrow">POV WALKTHROUGH</p>
-        <strong>Click to enter the house</strong>
-        <span>Tab releases/resumes the mouse for the planning panel. E selects what you are looking at; Z/X/C classifies it. Press 1, 2, or 3 to jump floors.</span>
-        <button id="resume-walk">Enter POV</button>
-      </div>
-
+      <div class="pov-hud" id="pov-hud" hidden><div class="crosshair" id="crosshair"><span></span><span></span></div><div class="look-label" id="look-label">Aim at an element · E to select</div></div>
+      <aside class="minimap" id="minimap" hidden><div class="minimap-head"><span id="minimap-floor">FLOOR 1</span><span class="minimap-key">M · MAP</span></div><div class="minimap-viewport" id="minimap-viewport"><div class="north-marker">N</div><div class="player-marker" id="player-marker"><span></span></div><div class="map-scale"><span></span><b id="map-scale-label">2 m</b></div></div><div class="minimap-controls"><button id="map-zoom-out" aria-label="Zoom map out">−</button><span id="minimap-mode-label">LOCAL MAP</span><button id="map-zoom-in" aria-label="Zoom map in">+</button></div></aside>
+      <div class="pointer-lock-card" id="pointer-lock-card" hidden><p class="eyebrow">POV WALKTHROUGH</p><strong>Click to enter the house</strong><span>Tab releases/resumes the mouse for the planning panel. E selects what you are looking at; Z/X/C classifies it. Press 1, 2, or 3 to jump floors.</span><button id="resume-walk">Enter POV</button></div>
       <div class="hint" id="hint">Drag to orbit · B wall · N stairs · Delete removes local build · G cycles renovation view</div>
     </div>
     <script type="module" src="/src/main.js"></script>
