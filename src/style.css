@@ -92,3 +92,6 @@ body.walk-mode .panel:hover { opacity: 1; }
 body.walk-mode .hint { display: none; }
 body.walk-mode.map-open .panel, body.walk-mode.map-open .topbar, body.walk-mode.map-open .pov-hud { opacity: .18; }
 @media (max-width: 650px) { .topbar { height: 70px; padding: 14px 16px; } .panel { left: 12px; top: auto; bottom: 12px; width: calc(100% - 24px); max-height: 52vh; overflow: auto; padding: 12px; display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; } .panel section { margin: 0 !important; padding: 0 !important; border: 0 !important; } .selection-section { grid-column: 1 / -1; } .reset, .hint { display: none; } h1 { font-size: 19px; } .pov-hud, .pointer-lock-card, .minimap { display: none !important; } }
+
+/* BUILD_MODE_V1 */
+.build-tools{display:grid;grid-template-columns:1fr 1fr;gap:7px}.build-tools button{border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.055);color:inherit;border-radius:8px;padding:9px 8px;cursor:pointer}.build-tools button:hover{background:rgba(79,154,141,.18);border-color:rgba(79,154,141,.55)}body[data-build-mode="wall"] #add-wall,body[data-build-mode="stairs"] #add-stairs{background:rgba(79,154,141,.28);border-color:#4f9a8d}

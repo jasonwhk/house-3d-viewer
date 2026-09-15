@@ -25,7 +25,7 @@
           </div>
           <div class="walk-note" id="walk-note" hidden>
             <strong>First-person inspection</strong>
-            <span>WASD move · Tab panel/mouse · E select · Z/X/C existing/demo/proposed · G renovation view · 1/2/3 floors · F door · M map · R respawn</span>
+            <span>WASD move/outside · Tab panel/mouse · E select · Z/X/C existing/demo/proposed · G renovation view · 1/2/3 floors · F door · M map · R respawn</span>
           </div>
         </section>
 
@@ -42,6 +42,18 @@
             <span><i class="legend-dot proposed"></i><b id="proposed-count">0</b> proposed</span>
           </div>
           <p class="local-note">Default: semi-transparent demolition view. Planning data stays in this browser only.</p>
+        </section>
+
+        <section class="build-section">
+          <p class="section-title">Build / edit</p>
+          <div class="build-tools">
+            <button id="add-wall">B · Add wall</button>
+            <button id="add-stairs">N · Add stairs</button>
+            <button id="delete-build">Delete selected</button>
+            <button id="build-cancel">Cancel tool</button>
+          </div>
+          <p class="local-note" id="build-status">Build tools ready · click two points in Orbit mode.</p>
+          <p class="local-note">New geometry is stored only in this browser. Outdoor ground is walkable in POV.</p>
         </section>
 
         <section>
@@ -133,7 +145,7 @@
         <button id="resume-walk">Enter POV</button>
       </div>
 
-      <div class="hint" id="hint">Drag to orbit · Scroll to zoom · Right-drag to pan · Click to inspect · G cycles renovation view</div>
+      <div class="hint" id="hint">Drag to orbit · B wall · N stairs · Delete removes local build · G cycles renovation view</div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
