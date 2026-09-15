@@ -175,6 +175,22 @@ export function migrateFromLocalStorage(oldRenovationData, oldBuildItems = []) {
 }
 
 /**
+ * Compute a simple fingerprint from a GLB ArrayBuffer.
+ * Hash of buffer size + first 1024 bytes + last 1024 bytes as hex string.
+ */
+export function computeFingerprint(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const size = bytes.length;
+  const firstChunk = bytes.slice(0, 1024);
+  const lastChunk = bytes.slice(Math.max(0, size - 1024));
+  let hash = 0;
+  for (const b of firstChunk) { hash = ((hash << 5) - hash) + b | 0; }
+  for (const b of lastChunk) { hash = ((hash << 5) - hash) + b | 0; }
+  hash = (hash ^ size) >>> 0;
+  return hash.toString(16);
+}
+
+/**
  * Simple deterministic ID generator (not cryptographic).
  * Collisions are extremely unlikely; for M1 this is sufficient.
  */

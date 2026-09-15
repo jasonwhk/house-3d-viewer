@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { initProject, getProject, setRenovation, getRenovation, removeRenovation, countRenovationStatuses } from './project/ProjectStore.js';
+import { initProject, getProject, setRenovation, getRenovation, removeRenovation, countRenovationStatuses, baseModel } from './project/ProjectStore.js';
 import { subscribe as subscribeProject } from './project/ProjectStore.js';
 import { downloadProject, createUploadInput, triggerUpload } from './project/serialization.js';
+import { setProject } from './project/ProjectStore.js';
+import { computeFingerprint } from './project/schema.js';
 import './style.css';
 
 const STORAGE_KEY = 'house3d-renovation-v1';
@@ -44,6 +46,7 @@ const mapZoomIn = document.querySelector('#map-zoom-in');
 const mapZoomOut = document.querySelector('#map-zoom-out');
 const downloadProjectButton = document.querySelector('#download-project');
 const uploadProjectButton = document.querySelector('#upload-project');
+const saveVersionButton = document.querySelector('#save-version');
 const projectStatus = document.querySelector('#project-status');
 
 let renovationView = 'demolition';
@@ -885,6 +888,8 @@ async function loadHouse() {
       '',
       (gltf) => {
         house = gltf.scene;
+        const fp = computeFingerprint(glb);
+        baseModel('fingerprint', fp);
         house.updateMatrixWorld(true);
         walkableMeshes = [];
         groundMeshes = [];
@@ -924,6 +929,11 @@ async function loadHouse() {
 
 loadHouse();
 updateRenovationCounts();
+
+if (typeof __COMMIT_HASH__ !== 'undefined' && __COMMIT_HASH__ !== 'unknown') {
+  const buildInfo = document.querySelector('#build-info');
+  if (buildInfo) buildInfo.textContent = `build ${__COMMIT_HASH__}`;
+}
 
 renovationViewControls.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-renovation-view]');
@@ -1043,6 +1053,12 @@ if (uploadProjectButton) {
   projectUploadInput = createUploadInput(
     (loadedProject) => {
       projectUploadInput = null; // clean up
+      const loadedFp = loadedProject?.baseModel?.fingerprint;
+      const storedFp = baseModel('fingerprint');
+      if (loadedFp && storedFp && loadedFp !== storedFp) {
+        status.textContent = '⚠ Fingerprint mismatch — uploaded project is from a different model file.';
+        setTimeout(() => { projectStatus.textContent = 'Project data is saved automatically in this browser. Download to export or share.'; }, 5000);
+      }
       setProject(loadedProject);
       buildItems = [];
       const migrated = JSON.parse(JSON.stringify(_project.renovation || {}));
@@ -1056,8 +1072,10 @@ if (uploadProjectButton) {
       }
       applyVisibility();
       updateRenovationCounts();
-      projectStatus.textContent = 'Project uploaded and loaded.';
-      setTimeout(() => { projectStatus.textContent = 'Project data is saved automatically in this browser. Download to export or share.'; }, 3000);
+      if (loadedFp && storedFp && loadedFp === storedFp) {
+        projectStatus.textContent = 'Project uploaded and loaded.';
+        setTimeout(() => { projectStatus.textContent = 'Project data is saved automatically in this browser. Download to export or share.'; }, 3000);
+      }
     },
     ({ errors }) => {
       projectStatus.textContent = 'Upload failed: ' + errors.join('; ');
@@ -1065,6 +1083,35 @@ if (uploadProjectButton) {
     }
   );
   uploadProjectButton.addEventListener('click', () => triggerUpload(projectUploadInput));
+}
+
+// Save version (checkpoint)
+if (saveVersionButton) {
+  saveVersionButton.addEventListener('click', () => {
+    const versionName = prompt('Enter version name:');
+    if (!versionName || !versionName.trim()) return;
+    const versionsKey = 'house3d-versions-v1';
+    let versions = [];
+    try { versions = JSON.parse(localStorage.getItem(versionsKey) || '[]'); } catch {}
+    const snapshotRef = nanoid();
+    const now = new Date().toISOString();
+    const versionEntry = {
+      name: versionName.trim(),
+      date: now,
+      snapshotRef,
+      fingerprint: baseModel('fingerprint') || null,
+    };
+    versions.push(versionEntry);
+    try { localStorage.setItem(versionsKey, JSON.stringify(versions)); } catch {}
+    projectStatus.textContent = `Saved version: ${versionEntry.name} (${new Date(now).toLocaleTimeString()})`;
+    setTimeout(() => {
+      projectStatus.textContent = 'Project data is saved automatically in this browser. Download to export or share.';
+    }, 3000);
+  });
+}
+
+function nanoid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
 }
 
 window.addEventListener('keydown', (event) => {

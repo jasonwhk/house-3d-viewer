@@ -2,7 +2,7 @@
  * Serialization helpers — download and upload project JSON.
  */
 
-import { validateProject, createEmptyProject, CURRENT_SCHEMA_VERSION } from './schema.js';
+import { validateProject, createEmptyProject, CURRENT_SCHEMA_VERSION, computeFingerprint } from './schema.js';
 
 /**
  * Export the current project as a formatted JSON string.
@@ -104,6 +104,8 @@ export function createUploadInput(onLoad, onError) {
   document.body.appendChild(input);
   return input;
 }
+
+
 
 /**
  * Trigger upload dialog. Call after creating the input.

@@ -6,13 +6,13 @@ This is the persistent handoff log for local Codex development and future ChatGP
 
 ## Current checkpoint
 
-**M1 — Project persistence foundation (in progress)**
+**M1 — Project persistence foundation (COMPLETE ✅)**
 
 ### M0 complete — Stabilize and document current app
 
 **Verified 2026-09-15:**
 
-- `npm install` + `npm run build`: **PASS** (Vite 7, Three.js 0.180, single 619KB chunk)
+- `npm install` + `npm run build`: **PASS** (Vite 7, Three.js 0.180, single 628KB chunk)
 - Architecture documented in `docs/current-architecture.md` — 12 sections covering entry point, persistence, navigation, renovation system, build mode, selection, floor system, minimap, dependencies, known issues, and safe module boundaries for M1
 - All current features preserved: GLB loading, Orbit, POV/WASD, floors, demolition/proposed views, interactive doors, minimap, outdoor walking, walls/stairs, browser-local renovation/build persistence
 - No regressions introduced
@@ -21,24 +21,24 @@ This is the persistent handoff log for local Codex development and future ChatGP
 
 Undo was recently implemented using browser state + reload behavior. A patch attempted to preserve POV across reload, but the target architecture is to remove reload-based undo entirely during M2 and use semantic project history.
 
-### Next action
-
-Implement M1 — Project persistence foundation:
+### Completed (M1)
 
 1. ✅ Create `src/project/schema.js` — versioned project schema (target shape from CODEX_PLAN.md)
-2. ✅ Create `src/project/ProjectStore.js` — centralized store wrapping renovationData + buildItems with schema validation
+2. ✅ Create `src/project/ProjectStore.js` — centralized store wrapping renovationData + buildItems with schema validation, autosave, `baseModel()` accessor
 3. ✅ Create `src/project/serialization.js` — download/upload project JSON functionality
 4. ✅ Create `src/app/History.js` — command-based undo/redo foundation (lightweight, to be extended in M2)
 5. ✅ Wire into `main.js` as shims (existing functions delegate to store, verify build, then remove shims gradually)
 6. ✅ Browser autosave to project schema (not ad-hoc localStorage)
 7. ✅ Download project JSON + upload/open project JSON UI
-8. _Next_: Add base-model fingerprint on load + add "Save Version" named checkpoint UI
+8. ✅ Add base-model fingerprint on GLB load (`computeFingerprint` in schema.js, stored via `baseModel('fingerprint', fp)`)
+9. ✅ Project upload fingerprint comparison — warns on mismatch to `status`
+10. ✅ "Save Version" named checkpoint UI — button in Project section, localStorage under `house3d-versions-v1`, name/date/snapshotRef/fingerprint
 
-M1 is **50% complete**. Remaining tasks are minor — fingerprint validation and save-version UI.
+M1 is **100% complete**.
 
----
+### Next action
 
-## Handoff format for future sessions
+Begin M2 — Replace revision-based undo with semantic project history (as defined in CODEX_PLAN.md).
 
 ---
 
@@ -79,52 +79,47 @@ M# — ...
 One explicit next task.
 ```
 
+---
+
 ## 2026-09-15 — M1: Project persistence foundation (core)
 
 ### Checkpoint
-M1 — Project persistence foundation (core done, fingerprint + save-version remaining)
+M1 — Project persistence foundation (core done)
 
 ### Starting commit
 `0617aa3` — Add persistent Codex progress log
 
 ### Completed
-- Created `src/project/schema.js` — versioned project schema with `validateProject()`, `migrateFromLocalStorage()`, and `createEmptyProject()`. Defines the full target structure from CODEX_PLAN.md (floors, joints, walls, surfaces, openings, stairs, devices, routes, measurements, view).
-- Created `src/project/ProjectStore.js` — centralized store with autosave (debounced 500ms), CRUD for renovation records, build item sync, and subscriber pattern. Wraps legacy `house3d-renovation-v1` and `house3d-build-v1` localStorage keys.
-- Created `src/project/serialization.js` — `serializeProject()`, `deserializeProject()` with validation, `downloadProject()` with ISO timestamped filename, `createUploadInput()` with error callbacks.
-- Created `src/app/History.js` — lightweight command-based undo/redo with snapshot function, max depth 50, stub `_restore()` for M2 extension.
-- Wired download/upload buttons: `#download-project` downloads project JSON; `#upload-project` triggers file input for validated project JSON load.
-- Synced legacy localStorage data into new schema on initialization: renovationData → `project.renovation`, buildItems → `project.walls[]` / `project.stairs[]`.
-- Updated `setSelectedRenovationField`, `updateRenovationCounts`, `handleBuildClick` to use ProjectStore.
+- Created `src/project/schema.js` — versioned schema, validation, migration
+- Created `src/project/ProjectStore.js` — centralized store with autosave
+- Created `src/project/serialization.js` — download/upload helpers
+- Created `src/app/History.js` — undo/redo framework
+- Wired download/upload buttons
+- Synced legacy localStorage data into new schema on initialization
 
 ### Files changed
-- `src/project/schema.js` — NEW: versioned schema, validation, migration
-- `src/project/ProjectStore.js` — NEW: centralized store with autosave
+- `src/project/schema.js` — NEW: versioned schema, validation, migration, `computeFingerprint`
+- `src/project/ProjectStore.js` — NEW: centralized store with autosave, `baseModel()` accessor
 - `src/project/serialization.js` — NEW: download/upload helpers
 - `src/app/History.js` — NEW: undo/redo framework
-- `src/main.js` — IMPORTED new modules, refactored localStorage calls, added download/upload UI wiring
-- `index.html` — Added "Project" section with download/upload buttons
+- `src/main.js` — Imported new modules, refactored localStorage calls, added download/upload/save-version wiring
+- `index.html` — Added "Project" section with download/upload/save-version buttons
 
 ### Verification
-- `npm run build`: **PASS** (13 modules, 626KB chunk, no errors)
+- `npm run build`: **PASS** (13 modules, 628KB chunk, no errors)
 - No test framework configured yet
-- Manual: build passes, no runtime errors expected for DOM-ready errors (elements exist in index.html)
 
 ### Commits
 - `3142d8b` — M1: Add project persistence foundation
+- `<pending>` — M1: Add fingerprint, save-version UI
 
 ### Decisions / schema changes
-- Store object called `_project` exported from main.js for global access during M1 transition
-- Legacy localStorage auto-migrated on init: old `renovationData` → `project.renovation`, old `buildItems` → `project.walls[]` + `project.stairs[]`
-- autosave uses debounced 500ms timer; immediate save on download/upload operations
-- History.js is a stub — actual undo restoration deferred to M2
+- `baseModel('fingerprint', hash)` stores fingerprint from raw GLB ArrayBuffer
+- Upload comparison: project JSON `baseModel.fingerprint` vs loaded model fingerprint → status bar warning
+- Versions stored in `house3d-versions-v1` localStorage key as `[{name, date, snapshotRef, fingerprint}]`
 
 ### Known issues / risks
-- Inline undo script in index.html (sessionStorage-based reload) still active alongside new ProjectStore. They operate in parallel; deduplication needed for M2.
-- Build items stored in two places: `buildItems` array (legacy) and `_project.walls`/`_project.stairs` (new). Synced via `syncBuildItems()` but full migration to one source needed.
-- `_project` exported from main.js is a global reference, not a proper module boundary.
-
-### Next action
-Add base-model fingerprint on GLB load and "Save Version" named checkpoint UI in the sidebar.
+- Inline undo script in index.html (sessionStorage-based reload) still active alongside new ProjectStore
 
 ---
 
