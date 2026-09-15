@@ -9,6 +9,8 @@ Public Three.js viewer for an interactive house model.
 - In-world element inspection
 - Whole-house and per-floor views
 - Ceiling toggle for dollhouse-style viewing
+- Interactive local renovation build tools for walls and stairs
+- Walkable outdoor area for exterior inspection
 - Responsive desktop/mobile interface
 - Vite build deployed with GitHub Actions to GitHub Pages
 
